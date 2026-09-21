@@ -1,0 +1,79 @@
+name: Cloudflare Private Speedtest Runner
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 每天 UTC 04:00 与 16:00 (对应北京时间 12:00 与 24:00)
+    - cron: '0 4,16 * * *'
+
+jobs:
+  speedtest-and-dispatch:
+    name: Private Runner & Dispatch
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: 检出私有测速仓库代码
+        uses: actions/checkout@v4
+
+      - name: 检出公开分发仓库
+        uses: actions/checkout@v4
+        with:
+          repository: mlgbz523/OverNodes
+          token: ${{ secrets.DISPATCH_PAT }}
+          path: public_repo
+          fetch-depth: 1
+
+      - name: 初始化 Python 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 安装运行时依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install aiohttp
+
+      - name: 执行私有测速探针 (全内存环境，严格隔离)
+        env:
+          PROBE_DOMAIN: ${{ secrets.PROBE_DOMAIN }}
+        run: |
+          if [ -z "$PROBE_DOMAIN" ]; then
+            echo "::error::PROBE_DOMAIN Secret is not set!"
+            exit 1
+          fi
+          python src/cf_overscan.py \
+            --output overNode_actions.txt \
+            --backup-file overNode_actions_backup.txt \
+            --node-tag Actions \
+            --regions US,DE,SG \
+            --domain "$PROBE_DOMAIN" \
+            --target-count 6 \
+            --min-speed 0.5 \
+            --force \
+            --no-push
+
+      - name: 跨仓库推送到公开分发仓库
+        run: |
+          if [ -f overNode_actions.txt ]; then
+            echo "[+] 测速完成，正在同步至公开分发仓库..."
+            cp overNode_actions.txt public_repo/overNode_actions.txt
+            [ -f overNode_actions_backup.txt ] && cp overNode_actions_backup.txt public_repo/overNode_actions_backup.txt
+            
+            cd public_repo
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add overNode_actions.txt
+            [ -f overNode_actions_backup.txt ] && git add overNode_actions_backup.txt
+            
+            if git diff --staged --quiet; then
+              echo "[+] 节点内容无变动，无需推送。"
+            else
+              git commit -m "Auto-update Cloudflare nodes (Private Runner Dispatch): $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+              git push origin main
+              echo "[+] ✅ 跨仓库推送成功！公开订阅已实时更新。"
+            fi
+          else
+            echo "[-] 测速失败或未生成结果文件！"
+            exit 1
+          fi
