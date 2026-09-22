@@ -54,18 +54,19 @@ jobs:
             --force \
             --no-push
 
-      - name: 执行出站 SOCKS5 深度验真 (在岗优先复检保活 + 缺口增量替补)
+      - name: 执行出站 SOCKS5 真实数据吞吐量压测 (在岗优先复检保活 + 选拔带宽王者)
         run: |
           python src/socks5_scanner.py \
             --existing-file public_repo/socks5.txt \
             --output socks5.txt \
-            --count 12 \
-            --concurrency 100
+            --count 6 \
+            --concurrency 80 \
+            --min-speed 0.8
 
-      - name: 执行链式订阅装配合成 (终极进化：入站优选 + 出站中继智能绑定)
+      - name: 执行链式订阅装配合成 (全量入站融合 + 单一王者代理统一定锚)
         run: |
           python src/chain_builder.py \
-            --inbound overNode_actions.txt \
+            --inbound overNode_actions.txt,public_repo/overNode.txt \
             --socks5 socks5.txt \
             --output overNode_chain.txt \
             --backup overNode_chain_backup.txt
