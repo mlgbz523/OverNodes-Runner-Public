@@ -53,40 +53,24 @@ jobs:
             --force \
             --no-push
 
-      - name: 执行出站 Proxy IP 自动化优选与测速
-        run: |
-          python src/proxyip_scanner.py \
-            --output proxyip.txt \
-            --count 15 \
-            --concurrency 80
-
       - name: 跨仓库推送到公开分发仓库
         run: |
-          has_updates=0
           if [ -f overNode_actions.txt ]; then
             cp overNode_actions.txt public_repo/overNode_actions.txt
             [ -f overNode_actions_backup.txt ] && cp overNode_actions_backup.txt public_repo/overNode_actions_backup.txt
-            has_updates=1
-          fi
-
-          if [ -f proxyip.txt ]; then
-            cp proxyip.txt public_repo/proxyip.txt
-            has_updates=1
-          fi
-
-          if [ "$has_updates" -eq 1 ]; then
+            
             cd public_repo
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add overNode_actions.txt proxyip.txt
+            git add overNode_actions.txt
             [ -f overNode_actions_backup.txt ] && git add overNode_actions_backup.txt
 
             if git diff --staged --quiet; then
-              echo "[+] 节点与 Proxy IP 内容无变动，无需推送。"
+              echo "[+] 节点内容无变动，无需推送。"
             else
-              git commit -m "Auto-update Cloudflare nodes & ProxyIP: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+              git commit -m "Auto-update Cloudflare nodes: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
               git push origin main
-              echo "[+] ✅ 跨仓库推送成功！公开订阅与 ProxyIP 已实时同步。"
+              echo "[+] ✅ 跨仓库推送成功！公开订阅已实时同步。"
             fi
           else
             echo "[-] 测速未生成结果文件！"
