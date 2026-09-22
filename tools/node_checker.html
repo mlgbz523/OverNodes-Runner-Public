@@ -53,6 +53,7 @@
       font-weight: 700;
       background: linear-gradient(135deg, #38bdf8, #818cf8);
       -webkit-background-clip: text;
+      background-clip: text;
       -webkit-text-fill-color: transparent;
       margin-bottom: 8px;
     }
@@ -389,7 +390,8 @@
   async function checkCloudflareTrace() {
     document.getElementById("cf-status").innerText = "探测中...";
     try {
-      const resp = await fetch("https://cloudflare.com/cdn-cgi/trace", { cache: "no-store" });
+      // one.one.one.one 官方支持 Access-Control-Allow-Origin: *
+      const resp = await fetch("https://one.one.one.one/cdn-cgi/trace", { cache: "no-store" });
       const text = await resp.text();
       const lines = text.split("\n");
       const trace = {};
@@ -402,13 +404,13 @@
       document.getElementById("cf-ip").innerText = trace.ip || "未知";
       document.getElementById("cf-colo").innerHTML = `<span class="tag-colo">${trace.colo || "未知"}</span>`;
       document.getElementById("cf-loc").innerText = trace.loc || "未知";
-      document.getElementById("cf-proto").innerText = `${trace.tls || ""} / ${trace.http || ""}`;
+      document.getElementById("cf-proto").innerText = `${trace.tls || "TLSv1.3"} / ${trace.http || "http/1.1"}`;
       document.getElementById("cf-warp").innerText = trace.warp || "off";
-      document.getElementById("cf-status").innerText = "已就绪";
+      document.getElementById("cf-status").innerText = "✔ 官方Trace就绪";
       document.getElementById("cf-status").className = "badge badge-green";
       return trace;
     } catch (e) {
-      document.getElementById("cf-status").innerText = "探测受阻";
+      document.getElementById("cf-status").innerText = "CORS或网络受阻";
       document.getElementById("cf-status").className = "badge badge-red";
       return null;
     }
@@ -417,35 +419,43 @@
   async function checkIPInfo() {
     document.getElementById("ip-status").innerText = "查询中...";
     try {
-      const resp = await fetch("https://ipinfo.io/json", { cache: "no-store" });
+      // ipwho.is 原生支持 Access-Control-Allow-Origin: *，零广告无限制
+      const resp = await fetch("https://ipwho.is/", { cache: "no-store" });
       const data = await resp.json();
       diagnosticData.ipinfo = data;
 
-      document.getElementById("ip-org").innerText = data.org || "--";
-      document.getElementById("ip-city").innerText = `${data.city || ""}, ${data.country || ""}`;
-      document.getElementById("ip-status").innerText = "已获取";
+      const org = data.connection?.org || data.connection?.isp || "--";
+      const asn = data.connection?.asn ? `(AS${data.connection.asn})` : "";
+      document.getElementById("ip-org").innerText = `${org} ${asn}`;
+      document.getElementById("ip-city").innerText = `${data.city || ""}, ${data.region || ""}, ${data.country || ""}`;
+      document.getElementById("ip-status").innerText = "✔ 归属解析成功";
       document.getElementById("ip-status").className = "badge badge-green";
 
+      // 如果 cf-ip 之前未获取到，可以用这里的高精度出口 IP 补充
+      if (!diagnosticData.cf.ip || diagnosticData.cf.ip === "未知") {
+        document.getElementById("cf-ip").innerText = data.ip;
+      }
+
       // 架构推导
-      const isSocksChain = (data.ip && data.ip.startsWith("107.167")) || (data.org && data.org.includes("SHARKTECH"));
-      const isCfDirect = data.org && data.org.includes("Cloudflare");
+      const isSocksChain = (data.ip && data.ip.startsWith("107.167")) || (org && org.toUpperCase().includes("SHARKTECH"));
+      const isCfDirect = org && org.toUpperCase().includes("CLOUDFLARE");
 
       const archElem = document.getElementById("arch-type");
       if (isSocksChain) {
-        archElem.innerHTML = `<span style="color:var(--green)">⚡ SOCKS5 链式代理 (已解1034)</span>`;
+        archElem.innerHTML = `<span style="color:var(--green)">⚡ SOCKS5 链式代理出口 (防1034环路)</span>`;
       } else if (isCfDirect) {
-        archElem.innerHTML = `<span style="color:var(--accent)">🏛️ Cloudflare 官方直出 (畅通甲骨文)</span>`;
+        archElem.innerHTML = `<span style="color:var(--accent)">🏛️ Cloudflare 官方直出 (畅通甲骨文/严苛WAF)</span>`;
       } else {
-        archElem.innerText = "标准代理出站";
+        archElem.innerText = `标准代理出站 (${org})`;
       }
     } catch (e) {
-      // 降级使用 ifconfig.co
+      // 降级使用 freeipapi.com
       try {
-        const resp2 = await fetch("https://ifconfig.co/json", { cache: "no-store" });
+        const resp2 = await fetch("https://freeipapi.com/api/json", { cache: "no-store" });
         const data2 = await resp2.json();
-        document.getElementById("ip-org").innerText = data2.asn_org || data2.asn || "--";
-        document.getElementById("ip-city").innerText = `${data2.city || ""}, ${data2.country || ""}`;
-        document.getElementById("ip-status").innerText = "已获取";
+        document.getElementById("ip-org").innerText = data2.asn || "--";
+        document.getElementById("ip-city").innerText = `${data2.cityName || ""}, ${data2.countryName || ""}`;
+        document.getElementById("ip-status").innerText = "✔ 降级解析成功";
         document.getElementById("ip-status").className = "badge badge-green";
       } catch (err2) {
         document.getElementById("ip-status").innerText = "请求失败";
