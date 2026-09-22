@@ -71,6 +71,7 @@ jobs:
 
           if [ -f socks5.txt ]; then
             cp socks5.txt public_repo/socks5.txt
+            [ -f socks5_backup.txt ] && cp socks5_backup.txt public_repo/socks5_backup.txt
             has_updates=1
           fi
 
@@ -80,6 +81,7 @@ jobs:
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git add overNode_actions.txt socks5.txt
             [ -f overNode_actions_backup.txt ] && git add overNode_actions_backup.txt
+            [ -f socks5_backup.txt ] && git add socks5_backup.txt
 
             if git diff --staged --quiet; then
               echo "[+] 节点与 SOCKS5 内容无变动，无需推送。"

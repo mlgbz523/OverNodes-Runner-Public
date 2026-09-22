@@ -223,9 +223,25 @@ def main():
     cost = round(time.time() - t0, 2)
 
     print(f"\n[+] SOCKS5 优选完成！总耗时 {cost}s，精选出 {len(best_nodes)} 个极速出站中继：")
+    # 熔断防御：如果深度探测活体不足，拒绝将空文件写入生产
+    if len(best_nodes) < 1:
+        print("[!] 警告：未探测到满足深度验真标准的 SOCKS5 活体，触发熔断保护，保留原有版本！")
+        return
+
+    # 软备份机制：自动维护上一代高可用快照
+    backup_file = args.output.replace(".txt", "_backup.txt")
+    if os.path.exists(args.output):
+        try:
+            import shutil
+            shutil.copyfile(args.output, backup_file)
+            print(f"[+] 已建立高可用软备份: {backup_file}")
+        except Exception as e:
+            print(f"[-] 软备份失败: {e}")
+
     output_lines = []
     for idx, node in enumerate(best_nodes, 1):
-        line = f"{node['entry']}#{node['country']}-SOCKS5-{int(node['latency'])}ms"
+        # 纯净命名规范：彻底剥离假延迟尾缀，仅保留 [socks5] 语义标识
+        line = f"{node['entry']}#{node['country']}-[socks5]"
         output_lines.append(line)
         print(f"  {idx:02d}. {line}")
 
