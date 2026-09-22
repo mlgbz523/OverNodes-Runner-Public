@@ -10,11 +10,12 @@ import os
 import re
 import time
 import socket
+import ssl
 import asyncio
 import urllib.request
 import json
 import argparse
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 
 # 多数据源配置 (参考 cf-bestip 聚合机制)
 SOURCES = [
@@ -45,7 +46,7 @@ PREFERRED_REGIONS = ["US", "HK", "SG", "JP", "DE", "GB", "CA", "NL", "FR"]
 
 
 class Socks5Scanner:
-    def __init__(self, target_count: int = 12, timeout: float = 2.5, concurrency: int = 120):
+    def __init__(self, target_count: int = 12, timeout: float = 3.5, concurrency: int = 80):
         self.target_count = target_count
         self.timeout = timeout
         self.concurrency = concurrency
@@ -94,52 +95,69 @@ class Socks5Scanner:
 
         return candidates
 
+    def _sync_deep_probe(self, host: str, port: int) -> Optional[Tuple[float, str]]:
+        """与 edgetunnel 1:1 同款真机深度探针 (SOCKS5握手 + 真实 TLS 握手 + HTTP /cdn-cgi/trace 校验)"""
+        t0 = time.perf_counter()
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(self.timeout)
+        try:
+            s.connect((host, port))
+            # 1. SOCKS5 握手认证协商
+            s.sendall(b"\x05\x01\x00")
+            resp = s.recv(2)
+            if resp != b"\x05\x00":
+                return None
+
+            # 2. 发起 CONNECT 请求到 cloudflare.com:443
+            target = b"cloudflare.com"
+            cmd = b"\x05\x01\x00\x03" + bytes([len(target)]) + target + (443).to_bytes(2, "big")
+            s.sendall(cmd)
+            rep = s.recv(10)
+            if len(rep) < 2 or rep[1] != 0:
+                return None
+
+            # 3. 核心：通过 SOCKS5 隧道完成真实 TLS 握手 (彻底剔除假活与自签名截获)
+            ctx = ssl.create_default_context()
+            tls = ctx.wrap_socket(s, server_hostname="cloudflare.com")
+
+            # 4. 发起真实 HTTP GET 验证与应用层端到端 RTT 测速
+            tls.sendall(b"GET /cdn-cgi/trace HTTP/1.1\r\nHost: cloudflare.com\r\nUser-Agent: Mozilla/5.0\r\nConnection: close\r\n\r\n")
+            data = tls.recv(1024).decode("utf-8", errors="ignore")
+
+            if "h=cloudflare.com" in data and "ip=" in data:
+                latency = round((time.perf_counter() - t0) * 1000, 1)
+                loc_match = re.search(r"loc=([A-Z]{2})", data)
+                loc = loc_match.group(1) if loc_match else "AUTO"
+                return latency, loc
+            return None
+        except Exception:
+            return None
+        finally:
+            try:
+                s.close()
+            except Exception:
+                pass
+
     async def probe_socks5(self, candidate: Dict, sem: asyncio.Semaphore) -> Optional[Dict]:
-        """全异步直接进行 SOCKS5 握手并验证通过该代理向 Cloudflare 发起 CONNECT"""
+        """调度线程池执行深度真机探测"""
         host = candidate["host"]
         port = candidate["port"]
         country = candidate["country"]
 
-        target_host = "cloudflare.com"
-        target_port = 443
-
         async with sem:
-            t0 = time.perf_counter()
-            try:
-                reader, writer = await asyncio.wait_for(
-                    asyncio.open_connection(host, port),
-                    timeout=self.timeout
-                )
-
-                # 1. SOCKS5 协议认证协商 (无需认证)
-                writer.write(b"\x05\x01\x00")
-                await writer.drain()
-                resp = await asyncio.wait_for(reader.read(2), timeout=self.timeout)
-                if resp != b"\x05\x00":
-                    writer.close()
-                    return None
-
-                # 2. 发起 CONNECT 命令 (尝试连接目标 cloudflare.com:443)
-                target_bytes = target_host.encode("utf-8")
-                cmd = b"\x05\x01\x00\x03" + bytes([len(target_bytes)]) + target_bytes + target_port.to_bytes(2, "big")
-                writer.write(cmd)
-                await writer.drain()
-
-                resp2 = await asyncio.wait_for(reader.read(10), timeout=self.timeout)
-                writer.close()
-
-                if len(resp2) >= 2 and resp2[1] == 0x00:
-                    latency = round((time.perf_counter() - t0) * 1000, 1)
-                    return {
-                        "host": host,
-                        "port": port,
-                        "entry": f"{host}:{port}",
-                        "socks_url": f"socks5://{host}:{port}",
-                        "country": country,
-                        "latency": latency
-                    }
-            except Exception:
-                pass
+            loop = asyncio.get_running_loop()
+            res = await loop.run_in_executor(None, self._sync_deep_probe, host, port)
+            if res:
+                latency, loc = res
+                final_country = loc if loc != "AUTO" else country
+                return {
+                    "host": host,
+                    "port": port,
+                    "entry": f"{host}:{port}",
+                    "socks_url": f"socks5://{host}:{port}",
+                    "country": final_country,
+                    "latency": latency
+                }
             return None
 
     async def scan(self) -> List[Dict]:
