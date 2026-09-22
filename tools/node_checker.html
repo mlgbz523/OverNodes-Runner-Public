@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OverNode 纯净节点质量与链路深度诊断套件</title>
+  <style>
+    :root {
+      --bg: #090d16;
+      --card-bg: rgba(22, 31, 49, 0.75);
+      --card-border: rgba(255, 255, 255, 0.08);
+      --accent: #38bdf8;
+      --accent-glow: rgba(56, 189, 248, 0.25);
+      --green: #4ade80;
+      --green-bg: rgba(74, 222, 128, 0.12);
+      --red: #f87171;
+      --red-bg: rgba(248, 113, 113, 0.12);
+      --yellow: #fbbf24;
+      --yellow-bg: rgba(251, 191, 36, 0.12);
+      --text: #f1f5f9;
+      --text-muted: #94a3b8;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    }
+
+    body {
+      background-color: var(--bg);
+      background-image: 
+        radial-gradient(at 0% 0%, rgba(56, 189, 248, 0.12) 0px, transparent 50%),
+        radial-gradient(at 100% 100%, rgba(99, 102, 241, 0.1) 0px, transparent 50%);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 32px 20px;
+    }
+
+    .container {
+      max-width: 1080px;
+      margin: 0 auto;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 32px;
+    }
+
+    header h1 {
+      font-size: 28px;
+      font-weight: 700;
+      background: linear-gradient(135deg, #38bdf8, #818cf8);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 8px;
+    }
+
+    header p {
+      color: var(--text-muted);
+      font-size: 14px;
+    }
+
+    .btn-group {
+      margin-top: 18px;
+      display: flex;
+      justify-content: center;
+      gap: 12px;
+    }
+
+    .btn {
+      background: linear-gradient(135deg, #0284c7, #2563eb);
+      color: #fff;
+      border: none;
+      padding: 10px 22px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      box-shadow: 0 4px 14px rgba(37, 99, 235, 0.3);
+      transition: all 0.2s ease;
+    }
+
+    .btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(37, 99, 235, 0.45);
+    }
+
+    .btn-outline {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--card-border);
+      color: var(--text);
+      box-shadow: none;
+    }
+
+    .btn-outline:hover {
+      background: rgba(255, 255, 255, 0.1);
+      transform: translateY(-2px);
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(480px, 1fr));
+      gap: 20px;
+      margin-bottom: 24px;
+    }
+
+    @media (max-width: 768px) {
+      .grid-2 {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .card {
+      background: var(--card-bg);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--card-border);
+      border-radius: 14px;
+      padding: 24px;
+      position: relative;
+    }
+
+    .card-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--accent);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 18px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      padding-bottom: 12px;
+    }
+
+    .badge {
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 6px;
+      font-weight: 600;
+    }
+
+    .badge-blue { background: rgba(56, 189, 248, 0.15); color: #38bdf8; }
+    .badge-green { background: var(--green-bg); color: var(--green); }
+    .badge-red { background: var(--red-bg); color: var(--red); }
+    .badge-yellow { background: var(--yellow-bg); color: var(--yellow); }
+
+    .data-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+      font-size: 13px;
+    }
+
+    .data-row:last-child {
+      border-bottom: none;
+    }
+
+    .data-label {
+      color: var(--text-muted);
+    }
+
+    .data-value {
+      font-weight: 500;
+      font-family: "JetBrains Mono", Consolas, monospace;
+      color: var(--text);
+    }
+
+    .tag-colo {
+      background: rgba(251, 191, 36, 0.15);
+      color: var(--yellow);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-weight: bold;
+    }
+
+    /* 延迟与状态网格 */
+    .table-container {
+      width: 100%;
+      overflow-x: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 13px;
+    }
+
+    th {
+      color: var(--text-muted);
+      font-weight: 500;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--card-border);
+    }
+
+    td {
+      padding: 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 10px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .status-ok { background: var(--green-bg); color: var(--green); }
+    .status-fail { background: var(--red-bg); color: var(--red); }
+    .status-wait { background: rgba(255, 255, 255, 0.05); color: var(--text-muted); }
+
+    /* WebRTC 泄漏警告条 */
+    .alert-box {
+      border-radius: 8px;
+      padding: 12px 16px;
+      margin-top: 14px;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .alert-safe {
+      background: var(--green-bg);
+      border: 1px solid rgba(74, 222, 128, 0.2);
+      color: var(--green);
+    }
+
+    .alert-leak {
+      background: var(--red-bg);
+      border: 1px solid rgba(248, 113, 113, 0.3);
+      color: var(--red);
+    }
+
+    /* 知识点说明栏 */
+    .knowledge-box {
+      margin-top: 24px;
+      background: rgba(15, 23, 42, 0.6);
+      border: 1px dashed rgba(56, 189, 248, 0.3);
+      border-radius: 12px;
+      padding: 20px;
+    }
+
+    .knowledge-title {
+      color: var(--accent);
+      font-size: 15px;
+      font-weight: 600;
+      margin-bottom: 10px;
+    }
+
+    .knowledge-content {
+      font-size: 13px;
+      color: var(--text-muted);
+      line-height: 1.7;
+    }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <header>
+    <h1>OverNode 纯净节点质量与链路深度诊断套件</h1>
+    <p>零三方追踪 · 本地原生运行 · 整合 Cloudflare Trace / IPInfo / WebRTC Leak / 多维业务握手</p>
+    <div class="btn-group">
+      <button class="btn" onclick="startAllTests()">⚡ 立即执行全维度诊断</button>
+      <button class="btn btn-outline" onclick="copyReport()">📋 复制诊断报告 (Markdown)</button>
+    </div>
+  </header>
+
+  <div class="grid-2">
+    <!-- 模块 1: Cloudflare 边缘 Trace -->
+    <div class="card">
+      <div class="card-title">
+        <span>🌐 1. Cloudflare 边缘机房与出口 (cdn-cgi/trace)</span>
+        <span class="badge badge-blue" id="cf-status">待测</span>
+      </div>
+      <div class="data-row">
+        <span class="data-label">入网/出口 IP</span>
+        <span class="data-value" id="cf-ip">--</span>
+      </div>
+      <div class="data-row">
+        <span class="data-label">命中机房 (Colo)</span>
+        <span class="data-value" id="cf-colo">--</span>
+      </div>
+      <div class="data-row">
+        <span class="data-label">物理落地地区 (Loc)</span>
+        <span class="data-value" id="cf-loc">--</span>
+      </div>
+      <div class="data-row">
+        <span class="data-label">传输协议 (TLS / HTTP)</span>
+        <span class="data-value" id="cf-proto">--</span>
+      </div>
+      <div class="data-row">
+        <span class="data-label">WARP 加密隧道状态</span>
+        <span class="data-value" id="cf-warp">--</span>
+      </div>
+    </div>
+
+    <!-- 模块 2: IP 权威属性与 WebRTC 泄露检测 -->
+    <div class="card">
+      <div class="card-title">
+        <span>🛡️ 2. 出口归属与 WebRTC 穿透检测</span>
+        <span class="badge badge-blue" id="ip-status">待测</span>
+      </div>
+      <div class="data-row">
+        <span class="data-label">出口运营商 / ASN</span>
+        <span class="data-value" id="ip-org">--</span>
+      </div>
+      <div class="data-row">
+        <span class="data-label">地理城市</span>
+        <span class="data-value" id="ip-city">--</span>
+      </div>
+      <div class="data-row">
+        <span class="data-label">WebRTC 穿透暴露 IP</span>
+        <span class="data-value" id="webrtc-ip">正在探测...</span>
+      </div>
+      <div class="data-row">
+        <span class="data-label">架构链路判定</span>
+        <span class="data-value" id="arch-type">分析中...</span>
+      </div>
+      <div id="webrtc-alert" class="alert-box alert-safe" style="display: none;">
+        <span>✔ WebRTC 安全：未穿透暴露本机真实国内宽带 IP</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 模块 3: 全球主流服务首包延迟与连通性测试 -->
+  <div class="card">
+    <div class="card-title">
+      <span>🚀 3. 全球业务连通性与首包响应矩阵 (TTFB Latency)</span>
+      <span class="badge badge-green">Live Probe</span>
+    </div>
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th>目标服务</th>
+            <th>业务类型</th>
+            <th>测试资源</th>
+            <th>首包耗时 (RTT)</th>
+            <th>连通性判定</th>
+          </tr>
+        </thead>
+        <tbody id="latency-table">
+          <!-- 动态渲染 -->
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- 模块 4: 架构剖析认知卡片 -->
+  <div class="knowledge-box">
+    <div class="knowledge-title">💡 深度认知：为什么“直接用代理 IP”是不可行的？优选 IP 为何至关重要？</div>
+    <div class="knowledge-content">
+      <p>1. <strong>进站 (Inbound) 与 出站 (Outbound) 的职责完全不同</strong>：</p>
+      <p>• <strong>优选 IP (Anycast Inbound)</strong>：解决的是<strong>“第一公里”的跨国与翻墙阻断</strong>。国内三大运营商对普通海外代理 IP 存在高达 40%~70% 的丢包和剧烈 QoS 限速。通过 Anycast 优选 IP，流量以极优 BGP 路由直奔 Cloudflare 边缘机房，延迟极低且 0% 丢包。</p>
+      <p>• <strong>代理 IP (SOCKS5 Outbound)</strong>：解决的是<strong>“最后一公里”的防 1034 环路与业务出站</strong>。如果 Cloudflare Worker 直出访问同在 CF 上的网站，会触发 Error 1034。因此需要 SOCKS5 锚点从外部出站，同时解锁流媒体。</p>
+      <p>• <strong>致命缺陷</strong>：如果你“直接用海外 SOCKS5 代理 IP 上网”，你的电脑必须裸连该 IP。一旦该 IP 被 GFW 识别或高丢包，你的网络会瞬间瘫痪。因此，<strong>优选 IP 是穿墙破障的基石，代理 IP 是落地出海的锚点，两者是黄金组合，不可替代！</strong></p>
+    </div>
+  </div>
+</div>
+
+<script>
+  const targets = [
+    { name: "Cloudflare CDN", type: "CDN 回源", url: "https://cloudflare.com/favicon.ico" },
+    { name: "Google", type: "基础检索", url: "https://www.google.com/favicon.ico" },
+    { name: "YouTube", type: "流媒体视频", url: "https://www.youtube.com/favicon.ico" },
+    { name: "GitHub", type: "代码平台", url: "https://github.com/favicon.ico" },
+    { name: "Oracle 官网", type: "Akamai 严苛防线", url: "https://www.oracle.com/favicon.ico" }
+  ];
+
+  let diagnosticData = {
+    cf: {},
+    ipinfo: {},
+    webrtc: [],
+    targets: []
+  };
+
+  async function checkCloudflareTrace() {
+    document.getElementById("cf-status").innerText = "探测中...";
+    try {
+      const resp = await fetch("https://cloudflare.com/cdn-cgi/trace", { cache: "no-store" });
+      const text = await resp.text();
+      const lines = text.split("\n");
+      const trace = {};
+      lines.forEach(l => {
+        const [k, v] = l.split("=");
+        if (k && v) trace[k.trim()] = v.trim();
+      });
+      diagnosticData.cf = trace;
+
+      document.getElementById("cf-ip").innerText = trace.ip || "未知";
+      document.getElementById("cf-colo").innerHTML = `<span class="tag-colo">${trace.colo || "未知"}</span>`;
+      document.getElementById("cf-loc").innerText = trace.loc || "未知";
+      document.getElementById("cf-proto").innerText = `${trace.tls || ""} / ${trace.http || ""}`;
+      document.getElementById("cf-warp").innerText = trace.warp || "off";
+      document.getElementById("cf-status").innerText = "已就绪";
+      document.getElementById("cf-status").className = "badge badge-green";
+      return trace;
+    } catch (e) {
+      document.getElementById("cf-status").innerText = "探测受阻";
+      document.getElementById("cf-status").className = "badge badge-red";
+      return null;
+    }
+  }
+
+  async function checkIPInfo() {
+    document.getElementById("ip-status").innerText = "查询中...";
+    try {
+      const resp = await fetch("https://ipinfo.io/json", { cache: "no-store" });
+      const data = await resp.json();
+      diagnosticData.ipinfo = data;
+
+      document.getElementById("ip-org").innerText = data.org || "--";
+      document.getElementById("ip-city").innerText = `${data.city || ""}, ${data.country || ""}`;
+      document.getElementById("ip-status").innerText = "已获取";
+      document.getElementById("ip-status").className = "badge badge-green";
+
+      // 架构推导
+      const isSocksChain = (data.ip && data.ip.startsWith("107.167")) || (data.org && data.org.includes("SHARKTECH"));
+      const isCfDirect = data.org && data.org.includes("Cloudflare");
+
+      const archElem = document.getElementById("arch-type");
+      if (isSocksChain) {
+        archElem.innerHTML = `<span style="color:var(--green)">⚡ SOCKS5 链式代理 (已解1034)</span>`;
+      } else if (isCfDirect) {
+        archElem.innerHTML = `<span style="color:var(--accent)">🏛️ Cloudflare 官方直出 (畅通甲骨文)</span>`;
+      } else {
+        archElem.innerText = "标准代理出站";
+      }
+    } catch (e) {
+      // 降级使用 ifconfig.co
+      try {
+        const resp2 = await fetch("https://ifconfig.co/json", { cache: "no-store" });
+        const data2 = await resp2.json();
+        document.getElementById("ip-org").innerText = data2.asn_org || data2.asn || "--";
+        document.getElementById("ip-city").innerText = `${data2.city || ""}, ${data2.country || ""}`;
+        document.getElementById("ip-status").innerText = "已获取";
+        document.getElementById("ip-status").className = "badge badge-green";
+      } catch (err2) {
+        document.getElementById("ip-status").innerText = "请求失败";
+        document.getElementById("ip-status").className = "badge badge-red";
+      }
+    }
+  }
+
+  function detectWebRTCLeak() {
+    const pc = new RTCPeerConnection({
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+    });
+    pc.createDataChannel("");
+    pc.createOffer().then(o => pc.setLocalDescription(o));
+
+    const ips = new Set();
+    pc.onicecandidate = (e) => {
+      if (!e || !e.candidate) {
+        const alertBox = document.getElementById("webrtc-alert");
+        alertBox.style.display = "flex";
+        if (ips.size === 0) {
+          document.getElementById("webrtc-ip").innerText = "未暴露 (受浏览器保护)";
+          alertBox.className = "alert-box alert-safe";
+          alertBox.innerText = "✔ WebRTC 极度安全：未检测到任何公网/局域网泄露";
+        }
+        return;
+      }
+      const match = /([0-9]{1,3}(\.[0-9]{1,3}){3})/.exec(e.candidate.candidate);
+      if (match) {
+        const ip = match[1];
+        ips.add(ip);
+        diagnosticData.webrtc = Array.from(ips);
+        document.getElementById("webrtc-ip").innerText = Array.from(ips).join(", ");
+        
+        const alertBox = document.getElementById("webrtc-alert");
+        alertBox.style.display = "flex";
+        // 判断是否为私有 IP
+        const isPrivate = ip.startsWith("192.168.") || ip.startsWith("10.") || ip.startsWith("172.");
+        if (isPrivate) {
+          alertBox.className = "alert-box alert-safe";
+          alertBox.innerText = `ℹ 检测到局域网私有 IP (${ip})，真实公网 IP 未泄露`;
+        } else {
+          alertBox.className = "alert-box alert-leak";
+          alertBox.innerText = `⚠️ 警告：检测到公网 WebRTC 泄露 (${ip})！`;
+        }
+      }
+    };
+  }
+
+  async function testLatencyMatrix() {
+    const tableBody = document.getElementById("latency-table");
+    tableBody.innerHTML = "";
+    diagnosticData.targets = [];
+
+    for (const item of targets) {
+      const row = document.createElement("tr");
+      row.innerHTML = `
+        <td style="font-weight:600">${item.name}</td>
+        <td style="color:var(--text-muted)">${item.type}</td>
+        <td style="font-family:monospace;font-size:11px;color:var(--text-muted)">${item.url}</td>
+        <td id="lat-${item.name}">测速中...</td>
+        <td id="status-${item.name}"><span class="status-pill status-wait">探测中</span></td>
+      `;
+      tableBody.appendChild(row);
+
+      const t0 = performance.now();
+      try {
+        await fetch(item.url, { mode: "no-cors", cache: "no-store" });
+        const lat = Math.round(performance.now() - t0);
+        document.getElementById(`lat-${item.name}`).innerText = `${lat} ms`;
+        document.getElementById(`status-${item.name}`).innerHTML = `<span class="status-pill status-ok">✔ 连通正常</span>`;
+        diagnosticData.targets.push({ name: item.name, latency: lat, status: "OK" });
+      } catch (err) {
+        const lat = Math.round(performance.now() - t0);
+        document.getElementById(`lat-${item.name}`).innerText = `${lat} ms`;
+        document.getElementById(`status-${item.name}`).innerHTML = `<span class="status-pill status-fail">✖ 握手超时/阻断</span>`;
+        diagnosticData.targets.push({ name: item.name, latency: lat, status: "FAILED" });
+      }
+    }
+  }
+
+  function startAllTests() {
+    checkCloudflareTrace();
+    checkIPInfo();
+    detectWebRTCLeak();
+    testLatencyMatrix();
+  }
+
+  function copyReport() {
+    const cf = diagnosticData.cf;
+    const ip = diagnosticData.ipinfo;
+    let md = `### OverNode 节点质量与链路深度诊断报告\n\n`;
+    md += `- **测试时间**: ${new Date().toLocaleString()}\n`;
+    md += `- **出口 IP**: ${cf.ip || ip.ip || "未知"}\n`;
+    md += `- **Cloudflare Colo**: ${cf.colo || "未知"}\n`;
+    md += `- **物理归属**: ${ip.city || ""}, ${ip.country || cf.loc || ""}\n`;
+    md += `- **网络运营商**: ${ip.org || "未知"}\n`;
+    md += `- **WebRTC 探测**: ${diagnosticData.webrtc.join(", ") || "无泄露"}\n\n`;
+    md += `#### 权威业务探测延迟矩阵\n`;
+    md += `| 目标服务 | 耗时 (RTT) | 状态 |\n|---|---|---|\n`;
+    diagnosticData.targets.forEach(t => {
+      md += `| ${t.name} | ${t.latency} ms | ${t.status} |\n`;
+    });
+    navigator.clipboard.writeText(md).then(() => {
+      alert("✅ 诊断报告已成功复制到剪贴板！可直接粘贴发送反馈。");
+    });
+  }
+
+  window.addEventListener("DOMContentLoaded", () => {
+    startAllTests();
+  });
+</script>
+
+</body>
+</html>
