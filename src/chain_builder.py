@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-OverNode Chain Assembler (终极进化：全量入站矩阵融合 + 单一王者代理统一定锚)
+OverNode Complete Chain Assembler (双轨矩阵：纯净直出 + 王者定锚链式装配引擎)
 核心机制：
 1. 【全量入站矩阵融合 (Complete Inbound Matrix)】：
    同时完整吸纳并融合 [overNode_actions.txt] (Actions云端实时优选) 与 [overNode.txt] (全量骨干优选)，去重整合出无遗漏的极速入站节点池。
-2. 【单一主力王者代理统一定锚 (Single Anchor Egress)】：
-   彻底杜绝不同优选 IP 使用不同代理导致的“跳IP/风控”问题！
-   从高吞吐出站池中选取 Top 1 王者代理，将所有优选节点统一绑定到该同一代理上，出站 IP 绝对固定一致！
+2. 【双轨节点装配 (Dual-Track Assembly)】：
+   - 【[直出] 官方纯净节点】：不带 SOCKS5 代理，走 Cloudflare 官方网络，专门秒开甲骨文官网 (Akamai)、Disney、银行等严格封杀机房代理的网站，杜绝 403 阻断！
+   - 【[socks5] 链式中继节点】：绑定当期实测吞吐量最大 (20Mbps+) 的 Top 1 黄金 SOCKS5 代理，出站 IP 绝对固定，杜绝 1034 冲突与跳 IP！
 3. 【edgetunnel 原生链式订阅标准】：
-   语法：{Anycast_IP}:{Port}#{Region}-{Port}-{Index}-[socks5]-$socks5://{Anchor_Socks5_IP}:{Port}
+   语法完全自适应。
 4. 【客户端物理防呆防护】：
-   客户端拉取订阅后仅看到入站优选 IP 与 [socks5] 纯净标记，裸 SOCKS5 彻底隐式封装，不可选、不混淆！
+   客户端拉取订阅后仅看到入站优选 IP 与纯净语义标记，裸 SOCKS5 彻底隐式封装，不可选、不混淆！
 5. 【高可用快照软备份】：
    自动维护 overNode_chain_backup.txt。
 """
@@ -32,7 +32,6 @@ def parse_multi_inbound_files(inbound_specs: str) -> List[Dict]:
 
     for fp in file_list:
         if not os.path.exists(fp):
-            # 尝试在同级目录下寻找
             if os.path.exists(os.path.basename(fp)):
                 fp = os.path.basename(fp)
             else:
@@ -115,24 +114,32 @@ def parse_socks5_file(filepath: str) -> List[Dict]:
     return proxies
 
 
-def assemble_chains_single_anchor(inbound_nodes: List[Dict], anchor_proxy: Dict) -> List[str]:
+def assemble_chains_dual_track(inbound_nodes: List[Dict], anchor_proxy: Dict) -> List[str]:
     """
-    单一王者定锚模式：
-    所有入站优选 IP 统一绑定同一个实测吞吐量最大、最稳定的出站 SOCKS5 代理！
+    全能双轨装配模式：
+    轨道 1：【[直出] 纯净直通节点】（不带 SOCKS5 代理，官方出口，秒开甲骨文/Akamai/风控站，不报 403）
+    轨道 2：【[socks5] 链式中继节点】（统一定锚大带宽 SOCKS5 代理，解决 1034 冲突，解锁 YouTube / Google）
     """
     chain_lines = []
-    region_counter: Dict[str, int] = {}
 
+    # 1. 轨道一：纯净直出节点 (排在前面，供特定业务分流组优先选用)
+    region_counter: Dict[str, int] = {}
     for node in inbound_nodes:
         region = node["region"]
         port = node["port"]
         region_counter[region] = region_counter.get(region, 0) + 1
         idx = region_counter[region]
+        clean_tag = f"{region}-{port}-{idx:02d}-[直出]"
+        chain_lines.append(f"{node['entry']}#{clean_tag}")
 
-        # 构造纯净的前端展示备注 (客户端界面仅能看到这个名字)
+    # 2. 轨道二：链式大带宽中继节点
+    region_counter.clear()
+    for node in inbound_nodes:
+        region = node["region"]
+        port = node["port"]
+        region_counter[region] = region_counter.get(region, 0) + 1
+        idx = region_counter[region]
         clean_tag = f"{region}-{port}-{idx:02d}-[socks5]"
-
-        # 统一绑定同一个主力 SOCKS5 代理！
         chain_entry = f"{node['entry']}#{clean_tag}-$socks5://{anchor_proxy['entry']}"
         chain_lines.append(chain_entry)
 
@@ -140,7 +147,7 @@ def assemble_chains_single_anchor(inbound_nodes: List[Dict], anchor_proxy: Dict)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="OverNode Complete Chain Assembler (Single Anchor Egress)")
+    parser = argparse.ArgumentParser(description="OverNode Complete Dual-Track Chain Assembler")
     parser.add_argument("--inbound", "-i", default="overNode_actions.txt,overNode.txt",
                         help="入站优选节点文件列表(逗号分隔，全量融合 actions 与本地文件)")
     parser.add_argument("--socks5", "-s", default="socks5.txt", help="出站 SOCKS5 代理文件")
@@ -149,13 +156,13 @@ def main():
     args = parser.parse_args()
 
     print("==================================================")
-    print("      OverNode 全量融合与王者定锚链式装配引擎      ")
+    print("      OverNode 全量双轨装配引擎 (直出 + 链式)      ")
     print(f" 入站多源融合: {args.inbound}")
     print(f" 出站代理文件: {args.socks5}")
     print(f" 目标输出订阅: {args.output}")
     print("==================================================")
 
-    # 1. 全量吸纳入站优选节点 (overNode_actions.txt + overNode.txt)
+    # 1. 全量吸纳入站优选节点
     inbound_nodes = parse_multi_inbound_files(args.inbound)
     if not inbound_nodes:
         print("[!] 致命错误：未能从指定的入站文件中提取到任何节点！")
@@ -173,15 +180,13 @@ def main():
         print("[!] 致命错误：出站 SOCKS5 代理池为空，装配终止！")
         sys.exit(1)
 
-    # 3. 锁定当前吞吐量最大的唯一王者代理
     anchor_proxy = outbound_proxies[0]
-    print(f"\n[★王者定锚] 本次订阅所有优选 IP 统一锁定使用代理: {anchor_proxy['entry']} [{anchor_proxy['country']}]")
-    print(f"[*] 无论用户切换哪个优选 IP，出站代理 IP 绝对保持一致，杜绝风控与跳 IP！")
+    print(f"\n[★王者定锚] 链式节点统一锁定主力代理: {anchor_proxy['entry']} [{anchor_proxy['country']}]")
 
-    # 4. 执行全量装配
-    chains = assemble_chains_single_anchor(inbound_nodes, anchor_proxy)
+    # 3. 执行双轨全量装配
+    chains = assemble_chains_dual_track(inbound_nodes, anchor_proxy)
     if not chains:
-        print("[!] 生成链式链路失败！")
+        print("[!] 生成双轨链路失败！")
         sys.exit(1)
 
     # 软备份机制
@@ -196,11 +201,10 @@ def main():
     with open(args.output, "w", encoding="utf-8", newline="\n") as f:
         f.write("\n".join(chains) + "\n")
 
-    print(f"\n[+] 链式装配圆满完成！共融合生成 {len(chains)} 个端到端双优节点：")
-    for idx, c in enumerate(chains[:6], 1):
+    print(f"\n[+] 双轨装配圆满完成！共生成 {len(chains)} 个节点 (含 {len(inbound_nodes)} 个[直出]与 {len(inbound_nodes)} 个[socks5])：")
+    for idx, c in enumerate(chains[:4], 1):
         print(f"  {idx:02d}. {c}")
-    if len(chains) > 6:
-        print(f"  ... 篇幅原因省略其余 {len(chains) - 6} 条 ...")
+    print(f"  ... 篇幅原因省略其余条目 ...")
 
     print(f"\n[+] 产物已安全持久化至: {os.path.abspath(args.output)}")
 
