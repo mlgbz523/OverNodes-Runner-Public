@@ -53,24 +53,40 @@ jobs:
             --force \
             --no-push
 
+      - name: 执行出站 SOCKS5 多源并发测速与优选 (cf-bestip 方案1)
+        run: |
+          python src/socks5_scanner.py \
+            --output socks5.txt \
+            --count 12 \
+            --concurrency 150
+
       - name: 跨仓库推送到公开分发仓库
         run: |
+          has_updates=0
           if [ -f overNode_actions.txt ]; then
             cp overNode_actions.txt public_repo/overNode_actions.txt
             [ -f overNode_actions_backup.txt ] && cp overNode_actions_backup.txt public_repo/overNode_actions_backup.txt
-            
+            has_updates=1
+          fi
+
+          if [ -f socks5.txt ]; then
+            cp socks5.txt public_repo/socks5.txt
+            has_updates=1
+          fi
+
+          if [ "$has_updates" -eq 1 ]; then
             cd public_repo
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add overNode_actions.txt
+            git add overNode_actions.txt socks5.txt
             [ -f overNode_actions_backup.txt ] && git add overNode_actions_backup.txt
 
             if git diff --staged --quiet; then
-              echo "[+] 节点内容无变动，无需推送。"
+              echo "[+] 节点与 SOCKS5 内容无变动，无需推送。"
             else
-              git commit -m "Auto-update Cloudflare nodes: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+              git commit -m "Auto-update Cloudflare nodes & SOCKS5 proxies: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
               git push origin main
-              echo "[+] ✅ 跨仓库推送成功！公开订阅已实时同步。"
+              echo "[+] ✅ 跨仓库推送成功！公开订阅与 SOCKS5 已实时同步。"
             fi
           else
             echo "[-] 测速未生成结果文件！"
