@@ -714,22 +714,61 @@ def check_domain_support(ip: str, port: int, domain: str, timeout: float = 2.0) 
                 pass
         return False
 
+def load_existing_actions_nodes(filepath: str) -> Dict[Tuple[str, int], List[str]]:
+    """
+    解析历史在岗优选节点文件，按 (region, port) 归类已就绪的在位 IP 列表
+    """
+    if not filepath or not os.path.exists(filepath):
+        return {}
+    existing_map: Dict[Tuple[str, int], List[str]] = {}
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split("#")
+                entry = parts[0].strip()
+                tag = parts[1].strip() if len(parts) > 1 else ""
+                if ":" in entry:
+                    ip, port_str = entry.split(":")
+                    try:
+                        port = int(port_str)
+                    except ValueError:
+                        continue
+                    reg_m = re.match(r"^([A-Z]{2})", tag)
+                    region = reg_m.group(1) if reg_m else "GLOBAL"
+                    key = (region, port)
+                    if ip not in existing_map.setdefault(key, []):
+                        existing_map[key].append(ip)
+    except Exception as e:
+        print(f"[!] 读取历史在岗优选节点失败: {e}")
+    return existing_map
+
+
 def speed_test_regions_ports(region_ips: Dict[str, List[Dict]], target_ports: List[int],
                               min_speed: float = 0.5,
-                              target_domain: Optional[str] = None) -> List[Dict]:
+                              target_domain: Optional[str] = None,
+                              existing_file: Optional[str] = None) -> List[Dict]:
     """
-    地区 × 端口 双维度矩阵测速筛选：
-    针对每个地区、每个测试端口组合，精准挑选【延迟最低】和【速度最快】的 2 个节点加入最终结果集。
-    结合业务域名反代健康度探针 (杜绝 1034 隔离与死端口)。
+    地区 × 端口 双维度矩阵测速筛选 (结合【在岗留任复检】与【业务域名反代探针】)：
+    1. 优先对该地区该端口历史在岗 IP 进行真实验真，达标直接留任，达成零漂移闭环
+    2. 仅在存量失效或缺口时，才从扫描出的新候选 IP 中测速补位
     """
     final_selected_nodes = []
 
     print(f"\n{BOLD}{CYAN}==============================================================={RESET}")
-    print(f"{BOLD}{CYAN}      [地区 × 端口] 双维度矩阵测速与双优节点智能筛选引擎       {RESET}")
+    print(f"{BOLD}{CYAN}   [地区 × 端口] 双维度矩阵测速与保活自愈智能筛选引擎   {RESET}")
     print(f"{BOLD}{CYAN}==============================================================={RESET}")
     domain_tip = f"探针域名: {target_domain}" if target_domain else "无探针"
-    print(f"[*] 测速规则: 每个地区的每个端口独立测试，精准选拔【最低延迟】与【最高吞吐】各 1 个 (每测试单元 2 节点)")
-    print(f"[*] 探针状态: {domain_tip} | 达标底线: >= {min_speed} MB/s\n")
+    print(f"[*] 测速规则: 每个地区的每个端口独立测试，精准选拔【最低延迟】与【最高吞吐】各 1 个 (每单元 2 节点)")
+    print(f"[*] 探针状态: {domain_tip} | 达标底线: >= {min_speed} MB/s")
+    if existing_file and os.path.exists(existing_file):
+        print(f"[*] 在岗留任机制: 已挂载历史文件 {os.path.basename(existing_file)}，优先复检在岗老节点！\n")
+    else:
+        print(f"[*] 在岗留任机制: 未挂载历史文件，执行常规全量选拔\n")
+
+    existing_map = load_existing_actions_nodes(existing_file) if existing_file else {}
 
     for region, ip_items in region_ips.items():
         region_name = get_system_tag(region)
@@ -741,43 +780,76 @@ def speed_test_regions_ports(region_ips: Dict[str, List[Dict]], target_ports: Li
         ip_items.sort(key=lambda x: x['latency'])
 
         for port in target_ports:
-            print(f"  {YELLOW}● [测试组合] 地区: {region} ({region_name}) | 端口: {port}{RESET}")
+            print(f"  {YELLOW}▶ [测试组合] 地区: {region} ({region_name}) | 端口: {port}{RESET}")
             tested_unit_nodes = []
 
-            # 遍历候选 IP 测试本端口 (放宽探索深度至最多 35 个候选 IP)
-            max_candidates = min(len(ip_items), 35)
-            for idx, item in enumerate(ip_items[:max_candidates], 1):
-                ip = item['ip']
-                lat = item['latency']
-                sys.stdout.write(f"    [{idx:>2}] 探针测速: {ip}:{port} (延迟: {lat:.1f}ms)... ")
+            # 阶段 1：在岗历史节点优先真机复检 (Retention-First)
+            old_ips = existing_map.get((region, port), [])
+            for old_ip in old_ips:
+                sys.stdout.write(f"    [在岗复检] 探针测试 {old_ip}:{port}... ")
                 sys.stdout.flush()
 
-                # 1. 真实业务域名反代探针（杜绝 1034 隔离、1003 或死端口）
+                # 真实业务域名反代探针
                 if target_domain:
-                    is_proxy_ok = check_domain_support(ip, port, target_domain, timeout=2.0)
+                    is_proxy_ok = check_domain_support(old_ip, port, target_domain, timeout=2.0)
                     if not is_proxy_ok:
-                        print(f"\033[90m[反代受阻/证书不匹配] 无法反代，自动淘汰\033[0m")
+                        print(f"\033[90m[反代受阻] 历史节点已失效，准备淘汰替补\033[0m")
                         continue
 
-                # 2. 真实下载带宽测速
-                speed = download_speed_test(ip, port)
+                # 真实下载带宽测试
+                speed = download_speed_test(old_ip, port)
                 if speed >= min_speed:
-                    node_info = dict(item)
-                    node_info['port'] = port
-                    node_info['speed'] = speed
-                    node_info['country'] = country_code
-                    tested_unit_nodes.append(node_info)
-                    print(f"\033[92m[业务可用] 实测速度: {speed:.2f} MB/s\033[0m")
+                    tested_unit_nodes.append({
+                        'ip': old_ip,
+                        'port': port,
+                        'speed': speed,
+                        'latency': 80.0,
+                        'country': country_code,
+                        'pick_reason': "在岗达标留任",
+                        'is_retained': True
+                    })
+                    print(f"\033[92m[在岗达标留任] 实测速度: {speed:.2f} MB/s (保持在岗)\033[0m")
                 else:
-                    print(f"\033[90m[未达标] 速度: {speed:.2f} MB/s (< {min_speed} MB/s)\033[0m")
+                    print(f"\033[90m[速度劣化] 实测: {speed:.2f} MB/s (< {min_speed} MB/s)，准备淘汰替补\033[0m")
 
-                # 如果已收集满 3 个达标样本，提前评选以加速流程
-                if len(tested_unit_nodes) >= 3:
-                    break
-                time.sleep(0.08)
-                time.sleep(0.08)
+            # 阶段 2：检查在岗留任是否已达成配额 (每单元 2 个节点)
+            if len(tested_unit_nodes) >= 2:
+                print(f"    {GREEN}✔ 该单元在岗节点 100% 达标留任，零漂移闭环，跳过新候选测试！{RESET}")
+            else:
+                needed = 2 - len(tested_unit_nodes)
+                print(f"    {CYAN}ℹ 在岗可用 {len(tested_unit_nodes)} 个，尚缺 {needed} 个，正在从公网候选池测试替补...{RESET}")
+                max_candidates = min(len(ip_items), 35)
+                for idx, item in enumerate(ip_items[:max_candidates], 1):
+                    ip = item['ip']
+                    if ip in [n['ip'] for n in tested_unit_nodes]:
+                        continue
+                    lat = item['latency']
+                    sys.stdout.write(f"    [{idx:>2}] 替补候选测试 {ip}:{port} (延迟: {lat:.1f}ms)... ")
+                    sys.stdout.flush()
 
-            # 3. 执行用户指令：挑选延迟最低的、速度最快的 2 个节点
+                    if target_domain:
+                        is_proxy_ok = check_domain_support(ip, port, target_domain, timeout=2.0)
+                        if not is_proxy_ok:
+                            print(f"\033[90m[反代受阻/证书不匹配] 无法反代，自动淘汰\033[0m")
+                            continue
+
+                    speed = download_speed_test(ip, port)
+                    if speed >= min_speed:
+                        node_info = dict(item)
+                        node_info['port'] = port
+                        node_info['speed'] = speed
+                        node_info['country'] = country_code
+                        node_info['pick_reason'] = "替补达标"
+                        tested_unit_nodes.append(node_info)
+                        print(f"\033[92m[业务可用] 实测速度: {speed:.2f} MB/s\033[0m")
+                    else:
+                        print(f"\033[90m[未达标] 速度: {speed:.2f} MB/s (< {min_speed} MB/s)\033[0m")
+
+                    if len(tested_unit_nodes) >= 3:
+                        break
+                    time.sleep(0.08)
+
+            # 阶段 3：评选优胜者
             if not tested_unit_nodes:
                 print(f"    {RED}--> [{region}:{port}] 未能测出达标可用节点，跳过该端口。{RESET}")
                 continue
@@ -785,33 +857,42 @@ def speed_test_regions_ports(region_ips: Dict[str, List[Dict]], target_ports: Li
             unit_selected = []
             if len(tested_unit_nodes) == 1:
                 single_node = tested_unit_nodes[0]
-                single_node['pick_reason'] = "唯一达标"
+                if not single_node.get('pick_reason'):
+                    single_node['pick_reason'] = "唯一达标"
                 unit_selected.append(single_node)
             else:
-                # 选出最低延迟节点
-                lowest_lat_node = min(tested_unit_nodes, key=lambda x: x['latency'])
-                # 选出最高速度节点
-                highest_spd_node = max(tested_unit_nodes, key=lambda x: x['speed'])
-
-                if lowest_lat_node['ip'] == highest_spd_node['ip']:
-                    # 同一节点既最低延迟又最高速度：挑选次优节点补足 2 个
-                    lowest_lat_node['pick_reason'] = "延迟最低&速度最快"
-                    unit_selected.append(lowest_lat_node)
-                    remaining = [n for n in tested_unit_nodes if n['ip'] != lowest_lat_node['ip']]
-                    if remaining:
-                        runner_up = max(remaining, key=lambda x: x['speed'])
-                        runner_up['pick_reason'] = "次优高速节点"
-                        unit_selected.append(runner_up)
+                retained_nodes = [n for n in tested_unit_nodes if n.get('is_retained')]
+                if len(retained_nodes) >= 2:
+                    unit_selected.extend(retained_nodes[:2])
+                elif len(retained_nodes) == 1:
+                    unit_selected.append(retained_nodes[0])
+                    new_candidates = [n for n in tested_unit_nodes if not n.get('is_retained')]
+                    if new_candidates:
+                        best_new = max(new_candidates, key=lambda x: x['speed'])
+                        best_new['pick_reason'] = "替补最高速"
+                        unit_selected.append(best_new)
                 else:
-                    lowest_lat_node['pick_reason'] = "延迟最低"
-                    highest_spd_node['pick_reason'] = "速度最快"
-                    unit_selected.append(lowest_lat_node)
-                    unit_selected.append(highest_spd_node)
+                    lowest_lat_node = min(tested_unit_nodes, key=lambda x: x['latency'])
+                    highest_spd_node = max(tested_unit_nodes, key=lambda x: x['speed'])
+                    if lowest_lat_node['ip'] == highest_spd_node['ip']:
+                        lowest_lat_node['pick_reason'] = "延迟最低与速度最快"
+                        unit_selected.append(lowest_lat_node)
+                        remaining = [n for n in tested_unit_nodes if n['ip'] != lowest_lat_node['ip']]
+                        if remaining:
+                            runner_up = max(remaining, key=lambda x: x['speed'])
+                            runner_up['pick_reason'] = "次优高速节点"
+                            unit_selected.append(runner_up)
+                    else:
+                        lowest_lat_node['pick_reason'] = "延迟最低"
+                        highest_spd_node['pick_reason'] = "速度最快"
+                        unit_selected.append(lowest_lat_node)
+                        unit_selected.append(highest_spd_node)
 
             for pick in unit_selected:
                 final_selected_nodes.append(pick)
-                print(f"    {GREEN}★ 入选结果集: {pick['ip']}:{pick['port']} [{pick['country']}] "
-                      f"延迟: {pick['latency']:.1f}ms | 速度: {pick['speed']:.2f} MB/s ({pick.get('pick_reason')}){RESET}")
+                status_label = "[在岗留任]" if pick.get("is_retained") else "[新选入位]"
+                print(f"    {GREEN}✔ {status_label} 入选: {pick['ip']}:{pick['port']} [{pick['country']}] "
+                      f"速度: {pick['speed']:.2f} MB/s ({pick.get('pick_reason')}){RESET}")
 
     return final_selected_nodes
 
@@ -1461,6 +1542,8 @@ def parse_args():
                         help="节点备注名称中间标识 (默认: ICOS，生成形如 DE-ICOS-8443)")
     parser.add_argument("--output", type=str, default=None,
                         help="主订阅输出文件名 (默认: 本地为 overNode.txt，Actions环境下默认为 overNode_actions.txt)")
+    parser.add_argument("--existing-file", "-e", type=str, default=None,
+                        help="历史在岗优选节点文件，用于优先复检保活 (默认自动检测已有输出文件)")
     parser.add_argument("--backup-file", type=str, default=None,
                         help="去重历史备份文件名 (默认: 本地为 overNode_backup.txt，Actions环境下默认为 overNode_actions_backup.txt)")
     parser.add_argument("--node-tag", type=str, default=None,
@@ -1596,11 +1679,19 @@ def main():
     print(f"[{GREEN}地区分配{RESET}] 锁定核心三大节点集: {', '.join(countries_desc)}")
 
     # 第二阶段：真实下载测速（地区 × 端口 双维度矩阵测试 + 业务域名反代探针）
+    existing_file = args.existing_file
+    if not existing_file:
+        for candidate_f in [output_file, "overNode_actions.txt", "overNode.txt"]:
+            if candidate_f and os.path.exists(candidate_f):
+                existing_file = candidate_f
+                break
+
     qualified_nodes = speed_test_regions_ports(
         region_ips=region_ips,
         target_ports=target_ports,
         min_speed=args.min_speed,
-        target_domain=target_domain
+        target_domain=target_domain,
+        existing_file=existing_file
     )
 
     project_root = get_project_root()
