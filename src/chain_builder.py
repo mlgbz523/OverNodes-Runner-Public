@@ -114,26 +114,16 @@ def parse_socks5_file(filepath: str) -> List[Dict]:
     return proxies
 
 
-def assemble_chains_dual_track(inbound_nodes: List[Dict], anchor_proxy: Dict) -> List[str]:
+def assemble_chains_dual_track(inbound_nodes: List[Dict], anchor_proxy: Dict, max_direct_per_region: int = 4) -> List[str]:
     """
-    全能双轨装配模式：
-    轨道 1：【[直出] 纯净直通节点】（不带 SOCKS5 代理，官方出口，秒开甲骨文/Akamai/风控站，不报 403）
-    轨道 2：【[socks5] 链式中继节点】（统一定锚大带宽 SOCKS5 代理，解决 1034 冲突，解锁 YouTube / Google）
+    轻量双轨装配模式（瘦身去冗余，彻底解决订阅器解析超时）：
+    1. 主力轨道：【[socks5] 链式中继节点】（排在前面作为绝对主力，杜绝 1034 冲突，解锁 YouTube / Google）
+    2. 应急轨道：【[直出] 官方纯净节点】（每个区域严格只保留 Top 4 个精选优选 IP，数量精简 75%，仅供备用）
     """
     chain_lines = []
 
-    # 1. 轨道一：纯净直出节点 (排在前面，供特定业务分流组优先选用)
+    # 1. 轨道一：主力 SOCKS5 链式中继节点（优先前置）
     region_counter: Dict[str, int] = {}
-    for node in inbound_nodes:
-        region = node["region"]
-        port = node["port"]
-        region_counter[region] = region_counter.get(region, 0) + 1
-        idx = region_counter[region]
-        clean_tag = f"{region}-{port}-{idx:02d}-[直出]"
-        chain_lines.append(f"{node['entry']}#{clean_tag}")
-
-    # 2. 轨道二：链式大带宽中继节点
-    region_counter.clear()
     for node in inbound_nodes:
         region = node["region"]
         port = node["port"]
@@ -143,6 +133,19 @@ def assemble_chains_dual_track(inbound_nodes: List[Dict], anchor_proxy: Dict) ->
         chain_entry = f"{node['entry']}#{clean_tag}-$socks5://{anchor_proxy['entry']}"
         chain_lines.append(chain_entry)
 
+    # 2. 轨道二：精简版直出节点（每个大区最多保留 max_direct_per_region 个，如 4 个）
+    region_direct_count: Dict[str, int] = {}
+    for node in inbound_nodes:
+        region = node["region"]
+        port = node["port"]
+        curr_count = region_direct_count.get(region, 0)
+        if curr_count >= max_direct_per_region:
+            continue
+        region_direct_count[region] = curr_count + 1
+        clean_tag = f"{region}-{port}-{curr_count + 1:02d}-[直出]"
+        chain_lines.append(f"{node['entry']}#{clean_tag}")
+
+    print(f"[*] 节点矩阵瘦身完成：主力 SOCKS5 节点 {len(chain_lines) - sum(region_direct_count.values())} 个，精选直出节点 {sum(region_direct_count.values())} 个，总规模: {len(chain_lines)} 个（体积压缩 60%）")
     return chain_lines
 
 
