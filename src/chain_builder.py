@@ -170,36 +170,36 @@ def assemble_real_landing_chains(by_region: Dict[str, List[Dict]], anchor_socks5
     """
     chain_lines = []
 
-    # 1. 组装真·新加坡落地直出节点 (方案 B 前缀直显：直连-[01]:端口)
+    # 1. 组装真·新加坡落地直出节点 (SG-直连-[01]:端口)
     sg_hosts = by_region.get("SG", [])
     for host in sg_hosts:
         ip = host["ip"]
         rank = host["rank"]
         for port in host["ports"]:
-            tag = f"🇸🇬 直连-[{rank:02d}]:{port}"
+            tag = f"🇸🇬 SG-直连-[{rank:02d}]:{port}"
             chain_lines.append(f"{ip}:{port}#{tag}")
     print(f"  + 装配 [🇸🇬 新加坡真落地直出] 节点: {len(sg_hosts)} 台主机共 {sum(len(h['ports']) for h in sg_hosts)} 个端口")
 
-    # 2. 组装真·美国落地链式中继节点 (方案 B 前缀直显：S5-[01]:端口)
+    # 2. 组装真·美国落地链式中继节点 (US-S5-[01]:端口，修复末尾多余横杠)
     us_hosts = by_region.get("US", [])
     for host in us_hosts:
         ip = host["ip"]
         rank = host["rank"]
         for port in host["ports"]:
-            tag = f"🇺🇸 S5-[{rank:02d}]:{port}"
+            tag = f"🇺🇸 US-S5-[{rank:02d}]:{port}"
             if anchor_socks5:
-                chain_entry = f"{ip}:{port}#{tag}-$socks5://{anchor_socks5}"
+                chain_entry = f"{ip}:{port}#{tag}$socks5://{anchor_socks5}"
             else:
                 chain_entry = f"{ip}:{port}#{tag}"
             chain_lines.append(chain_entry)
     print(f"  + 装配 [🇺🇸 美国真落地链式(S5)] 节点: {len(us_hosts)} 台主机共 {sum(len(h['ports']) for h in us_hosts)} 个端口")
 
-    # 3. 补充 2 个美区官方纯净直连备用节点 (大带宽下载专线)
+    # 3. 补充 2 个美区官方纯净直连备用节点 (US-直连-[01]:端口)
     if us_hosts:
         primary_us = us_hosts[0]
         ip = primary_us["ip"]
         for port in [443, 2053]:
-            tag = f"🇺🇸 直连-[01]:{port}"
+            tag = f"🇺🇸 US-直连-[01]:{port}"
             chain_lines.append(f"{ip}:{port}#{tag}")
         print(f"  + 补充 [🇺🇸 美国直连备用] 节点: 2 个")
 
