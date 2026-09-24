@@ -162,47 +162,65 @@ class Socks5Scanner:
         for src in SOURCES:
             try:
                 print(f"[*] 正在拉取数据源: {src['name']}...", flush=True)
-                req = urllib.request.Request(
-                    src["url"],
-                    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0"}
-                )
-                with urllib.request.urlopen(req, timeout=5) as resp:
-                    raw = resp.read().decode("utf-8", errors="ignore")
-                    count = 0
-                    if src["type"] == "json":
-                        try:
-                            data = json.loads(raw)
-                            for item in data:
-                                ip = item.get("ip")
-                                port = item.get("port")
-                                geo = item.get("geolocation") or {}
-                                country = geo.get("country") or "GLOBAL"
-                                if ip and port:
-                                    key = f"{ip}:{port}"
-                                    if key not in seen:
-                                        seen.add(key)
-                                        candidates.append({"host": ip, "port": int(port), "country": country})
-                                        count += 1
-                        except Exception:
-                            pass
-                    elif src["type"] == "txt":
-                        for line in raw.splitlines():
-                            line = line.strip()
-                            if not line or line.startswith("#"):
+                raw = None
+                urls_to_try = [src["url"]]
+                if "raw.githubusercontent.com" in src["url"]:
+                    urls_to_try.append(f"https://ghfast.top/{src['url']}")
+                elif "cdn.jsdelivr.net" in src["url"]:
+                    urls_to_try.append(src["url"].replace("cdn.jsdelivr.net", "fastly.jsdelivr.net"))
+
+                for target_u in urls_to_try:
+                    try:
+                        req = urllib.request.Request(
+                            target_u,
+                            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0"}
+                        )
+                        with urllib.request.urlopen(req, timeout=4.5) as resp:
+                            raw = resp.read().decode("utf-8", errors="ignore")
+                            if raw:
+                                break
+                    except Exception:
+                        continue
+
+                if not raw:
+                    print(f"  - 拉取 {src['name']} 失败 (跳过)", flush=True)
+                    continue
+
+                count = 0
+                if src["type"] == "json":
+                    try:
+                        data = json.loads(raw)
+                        for item in data:
+                            ip = item.get("ip")
+                            port = item.get("port")
+                            geo = item.get("geolocation") or {}
+                            country = geo.get("country") or "GLOBAL"
+                            if ip and port:
+                                key = f"{ip}:{port}"
+                                if key not in seen:
+                                    seen.add(key)
+                                    candidates.append({"host": ip, "port": int(port), "country": country})
+                                    count += 1
+                    except Exception:
+                        pass
+                elif src["type"] == "txt":
+                    for line in raw.splitlines():
+                        line = line.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        if ":" in line:
+                            parts = line.split(":")
+                            ip, port = parts[0].strip(), parts[1].strip()
+                            try:
+                                p_int = int(port)
+                                key = f"{ip}:{p_int}"
+                                if key not in seen:
+                                    seen.add(key)
+                                    candidates.append({"host": ip, "port": p_int, "country": "AUTO"})
+                                    count += 1
+                            except ValueError:
                                 continue
-                            if ":" in line:
-                                parts = line.split(":")
-                                ip, port = parts[0].strip(), parts[1].strip()
-                                try:
-                                    p_int = int(port)
-                                    key = f"{ip}:{p_int}"
-                                    if key not in seen:
-                                        seen.add(key)
-                                        candidates.append({"host": ip, "port": p_int, "country": "AUTO"})
-                                        count += 1
-                                except ValueError:
-                                    continue
-                    print(f"  + {src['name']} 贡献 {count} 个新候选，候选池累计: {len(candidates)}", flush=True)
+                print(f"  + {src['name']} 贡献 {count} 个新候选，候选池累计: {len(candidates)}", flush=True)
             except Exception as e:
                 print(f"  - 拉取 {src['name']} 失败 (跳过): {e}", flush=True)
 
