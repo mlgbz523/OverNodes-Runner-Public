@@ -170,9 +170,9 @@ DEFAULT_TEST_CASES = [
     {"domain": "steamstatic.com", "expected": "🎮 Steam 服务", "category": "Steam 静态资源(防429)", "must_proxy": True},
     {"domain": "steamcontent.com", "expected": "🎯 全球直连", "category": "Steam 游戏下载 CDN", "must_proxy": False},
     # 视频与直出
-    {"domain": "googlevideo.com", "expected": "🔗 直连节点", "category": "YouTube 4K 视频切片", "must_proxy": True},
-    {"domain": "ttvnw.net", "expected": "🔗 直连节点", "category": "Twitch 视频分片流", "must_proxy": True},
-    {"domain": "hembed.com", "expected": "🔗 直连节点", "category": "第三方视频直出流", "must_proxy": True},
+    {"domain": "googlevideo.com", "expected": "⚡ 极速直连", "category": "YouTube 4K 视频切片", "must_proxy": True},
+    {"domain": "ttvnw.net", "expected": "⚡ 极速直连", "category": "Twitch 视频分片流", "must_proxy": True},
+    {"domain": "hembed.com", "expected": "⚡ 极速直连", "category": "第三方视频直出流", "must_proxy": True},
     {"domain": "youtube.com", "expected": "🎬 国外媒体", "category": "YouTube 网页控制面", "must_proxy": True},
     {"domain": "twitch.tv", "expected": "🎬 国外媒体", "category": "Twitch 网页控制面", "must_proxy": True},
     {"domain": "rule34video.com", "expected": "🎬 国外媒体", "category": "特色视频站点", "must_proxy": True},

@@ -198,14 +198,14 @@ def assemble_multi_country_chains(inbound_nodes: List[Dict], outbound_proxies: L
 
         print(f"  + 装配 [{flag} {country}] 落地链式节点: {len(selected_inbounds)} 个 (绑定 SOCKS5: {anchor_proxy['entry']})")
 
-    # 4. 精简直出节点 (纯净直连 Cloudflare Anycast，不挂 SOCKS5)
+    # 4. 精选直连节点 (纯净直连 Cloudflare Anycast，不挂 SOCKS5，用于大流量极速下载)
     direct_added = 0
     for r in ["SG", "US", "DE"]:
         nodes = inbound_by_region.get(r, [])
         for node in nodes[:max_direct_total // 3]:
             port = node["port"]
             flag = COUNTRY_FLAGS.get(r, "🌐")
-            clean_tag = f"🔗 直出-{flag}{r}-{port}-{direct_added + 1:02d}"
+            clean_tag = f"⚡ 极速直连-{flag}{r}-{port}-{direct_added + 1:02d}"
             chain_lines.append(f"{node['entry']}#{clean_tag}")
             direct_added += 1
 
