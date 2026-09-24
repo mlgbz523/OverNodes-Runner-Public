@@ -18,6 +18,7 @@ import subprocess
 import argparse
 import urllib.request
 import traceback
+import re
 from datetime import datetime
 from typing import List, Optional, Dict, Tuple
 
@@ -915,24 +916,31 @@ def rotate_and_save_nodes(
 
     os.makedirs(base_dir, exist_ok=True)
 
-    # 1. 生成主订阅内容 (本地保留真实宽带测速值，Actions云端使用防重名简化标签)
+    # 1. 生成主订阅内容 (按地区与主机实测优选排名，规范生成 [01]:端口 格式)
     overnode_lines = []
     legacy_lines = []
-    tag_counter = {}
+    region_ip_rank = {}
     for n in qualified_nodes:
+        c = n['country']
+        if c not in region_ip_rank:
+            region_ip_rank[c] = []
+        if n['ip'] not in region_ip_rank[c]:
+            region_ip_rank[c].append(n['ip'])
+
+    for n in qualified_nodes:
+        c = n['country']
+        ip = n['ip']
+        port = n['port']
+        rank = region_ip_rank[c].index(ip) + 1 if ip in region_ip_rank.get(c, []) else 1
         if node_tag:
-            # 云端 Actions 简化标签 (彻底防重名：US-Actions-443-1，保证 Clash 规则组 100% 正常分流)
-            base_key = f"{n['country']}-{node_tag}-{n['port']}"
-            tag_counter[base_key] = tag_counter.get(base_key, 0) + 1
-            idx = tag_counter[base_key]
-            overnode_line = f"{n['ip']}:{n['port']}#{base_key}-{idx}"
+            # 云端规范标签：例如 US-[01]:443 (每个IP的每个端口保留一个节点，彻底杜绝截断与冗余序号)
+            overnode_line = f"{ip}:{port}#{c}-[{rank:02d}]:{port}"
         else:
             # 本地真机宽带真实测速模式
-            overnode_line = f"{n['ip']}:{n['port']}#{n['country']}[{n['speed']:.2f}MB/S]-{n['port']}"
+            overnode_line = f"{ip}:{port}#{c}[{n['speed']:.2f}MB/S]-{port}"
         overnode_lines.append(overnode_line)
 
-        country_display = f"{n['country']}-{node_tag}" if node_tag else n['country']
-        legacy_line = f"{n['ip']}:{n['port']}#{country_display}-{tag}-{n['port']}"
+        legacy_line = f"{ip}:{port}#{c}-[{rank:02d}]:{port}"
         legacy_lines.append(legacy_line)
 
     overnode_content = "\n".join(overnode_lines) + "\n"
