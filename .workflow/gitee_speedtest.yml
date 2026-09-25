@@ -1,52 +1,42 @@
-﻿name: gitee-overscan-runner
-displayName: Cloudflare 节点测速 & Gitee 专属订阅推送
+version: 1.0
+name: gitee-overscan-runner
+displayName: 'Cloudflare 节点测速 & Gitee 专属订阅推送'
 
 triggers:
   schedule:
-    - cron: "0 4,16 * * *"
+    - cron: '0 4,16 * * *'
   push:
     branches:
       - main
 
 stages:
-  - name: speedtest
-    displayName: 测速优选与订阅推送
+  - name: speedtest-and-push
+    displayName: '节点测速与推送'
+    strategy: naturally
     steps:
-      - step: build@shell
-        name: install-deps
-        displayName: 安装 Python 依赖
-        image: python:3.11
-        script:
-          - pip install aiohttp -q
+      - step: build@python
+        name: run-speedtest-and-push
+        displayName: '执行测速并推送到分发仓库'
+        pythonVersion: 3.9
+        commands: |
+          set -e
+          echo '=== 1. 安装 Python 依赖 ==='
+          pip install aiohttp requests -q
 
-      - step: build@shell
-        name: run-speedtest
-        displayName: 执行 CF 优选测速
-        image: python:3.11
-        script:
-          - pip install aiohttp -q
-          - python src/cf_overscan.py --output overNode_gitee.txt --backup-file overNode_gitee_backup.txt --node-tag Gitee --regions US,DE,SG --domain 98k2887114514.28870721.xyz --target-count 6 --min-speed 0.3 --force --no-push
-          - python src/chain_builder.py --inbound overNode_gitee.txt --output overNode_gitee_chain.txt --backup overNode_gitee_chain_backup.txt || echo "chain_builder skipped"
+          echo '=== 2. 执行测速并生成 Gitee 节点 ==='
+          python src/cf_overscan.py --output overNode_gitee.txt --backup-file overNode_gitee_backup.txt --node-tag Gitee --regions US,DE,SG --domain 98k2887114514.28870721.xyz --target-count 6 --min-speed 0.3 --force --no-push
+          python src/chain_builder.py --inbound overNode_gitee.txt --output overNode_gitee_chain.txt --backup overNode_gitee_chain_backup.txt || echo 'chain_builder skipped'
 
-      - step: build@shell
-        name: push-to-gitee
-        displayName: 推送到 OverNodes-Gitee 公开仓库
-        image: python:3.11
-        script:
-          - pip install aiohttp -q
-          - pip install requests -q
-          - python src/cf_overscan.py --output overNode_gitee.txt --backup-file overNode_gitee_backup.txt --node-tag Gitee --regions US,DE,SG --domain 98k2887114514.28870721.xyz --target-count 6 --min-speed 0.3 --force --no-push
-          - python src/chain_builder.py --inbound overNode_gitee.txt --output overNode_gitee_chain.txt --backup overNode_gitee_chain_backup.txt || echo "chain_builder skipped"
-          - git clone https://oauth2:${GITEE_TOKEN}@gitee.com/ggbodMlgbz/OverNodes-Gitee.git dist_repo
-          - cp overNode_gitee.txt dist_repo/overNode_gitee.txt
-          - if [ -f overNode_gitee_backup.txt ]; then cp overNode_gitee_backup.txt dist_repo/overNode_gitee_backup.txt; fi
-          - if [ -f overNode_gitee_chain.txt ]; then cp overNode_gitee_chain.txt dist_repo/overNode_gitee_chain.txt; fi
-          - if [ -f overNode_gitee_chain_backup.txt ]; then cp overNode_gitee_chain_backup.txt dist_repo/overNode_gitee_chain_backup.txt; fi
-          - cd dist_repo
-          - git config user.name "Gitee-Runner-Bot"
-          - git config user.email "bot@gitee.com"
-          - git add overNode_gitee.txt overNode_gitee_backup.txt overNode_gitee_chain.txt overNode_gitee_chain_backup.txt
-          - git commit -m "Auto update Gitee nodes $(date '+%Y-%m-%d %H:%M')" || echo "no changes"
-          - git push https://oauth2:${GITEE_TOKEN}@gitee.com/ggbodMlgbz/OverNodes-Gitee.git main
-        envs:
-          - GITEE_TOKEN
+          echo '=== 3. 提交推送到 OverNodes-Gitee 仓库 ==='
+          git clone https://oauth2:@gitee.com/ggbodMlgbz/OverNodes-Gitee.git dist_repo
+          cp overNode_gitee.txt dist_repo/overNode_gitee.txt
+          if [ -f overNode_gitee_backup.txt ]; then cp overNode_gitee_backup.txt dist_repo/overNode_gitee_backup.txt; fi
+          if [ -f overNode_gitee_chain.txt ]; then cp overNode_gitee_chain.txt dist_repo/overNode_gitee_chain.txt; fi
+          if [ -f overNode_gitee_chain_backup.txt ]; then cp overNode_gitee_chain_backup.txt dist_repo/overNode_gitee_chain_backup.txt; fi
+
+          cd dist_repo
+          git config user.name 'Gitee-Runner-Bot'
+          git config user.email 'bot@gitee.com'
+          git add overNode_gitee.txt overNode_gitee_backup.txt overNode_gitee_chain.txt overNode_gitee_chain_backup.txt
+          git commit -m 'Auto update Gitee nodes' || echo 'No changes to commit'
+          git push https://oauth2:@gitee.com/ggbodMlgbz/OverNodes-Gitee.git main
