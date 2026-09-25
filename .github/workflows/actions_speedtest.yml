@@ -3,8 +3,8 @@ name: Cloudflare Private Speedtest Runner
 on:
   workflow_dispatch:
   schedule:
-    # 每天 UTC 04:00 与 16:00 (对应北京时间 12:00 与 24:00)
-    - cron: '0 4,16 * * *'
+    # 每天执行 3 次: UTC 00:00, 08:00, 16:00 (对应北京时间 08:00, 16:00, 24:00)
+    - cron: '0 0,8,16 * * *'
 
 jobs:
   speedtest-and-dispatch:
