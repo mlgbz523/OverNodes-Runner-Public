@@ -3,8 +3,8 @@ name: gitee-overscan-runner
 displayName: 'Cloudflare 节点测速推送'
 
 triggers:
-  schedule:
-    cron: '0 */12 * * *'
+  # schedule:
+  #   cron: '0 */12 * * *'  # 定时已关闭（Gitee 国内环境测速受限）
   push:
     branches:
       precise:
