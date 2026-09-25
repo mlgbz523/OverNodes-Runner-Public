@@ -1,0 +1,38 @@
+﻿name: gitee-overscan-runner
+displayName: Cloudflare 节点测速 & 推送 Gitee 专属订阅
+
+triggers:
+  schedule:
+    - cron: "0 4,16 * * *"
+  push:
+    branches:
+      - main
+
+stages:
+  - name: 测速与专属分发
+    displayName: Gitee 专属节点测速与推送
+    steps:
+      - step: execute@shell
+        name: 执行测速并推送至 Gitee 公开订阅仓库
+        image: python:3.11
+        inputs:
+          docker:
+            image: python:3.11
+        script:
+          - pip install aiohttp
+          - python src/cf_overscan.py --output overNode_gitee.txt --backup-file overNode_gitee_backup.txt --node-tag Gitee --regions US,DE,SG --domain 98k2887114514.28870721.xyz --target-count 6 --min-speed 0.3 --force --no-push
+          - python src/chain_builder.py --inbound overNode_gitee.txt --output overNode_gitee_chain.txt --backup overNode_gitee_chain_backup.txt || echo "chain_builder skipped"
+          - git clone https://oauth2:${GITEE_TOKEN}@gitee.com/ggbodMlgbz/OverNodes-Gitee.git dist_repo
+          - cp overNode_gitee.txt dist_repo/overNode_gitee.txt
+          - "[ -f overNode_gitee_backup.txt ] && cp overNode_gitee_backup.txt dist_repo/overNode_gitee_backup.txt || true"
+          - "[ -f overNode_gitee_chain.txt ] && cp overNode_gitee_chain.txt dist_repo/overNode_gitee_chain.txt || true"
+          - "[ -f overNode_gitee_chain_backup.txt ] && cp overNode_gitee_chain_backup.txt dist_repo/overNode_gitee_chain_backup.txt || true"
+          - cd dist_repo
+          - git config user.name "Gitee-Runner-Bot"
+          - git config user.email "bot@gitee.com"
+          - git add overNode_gitee*.txt
+          - "git commit -m 'Auto: Gitee 定时更新专属优选节点 [skip ci]' || echo '无变更'"
+          - git push https://oauth2:${GITEE_TOKEN}@gitee.com/ggbodMlgbz/OverNodes-Gitee.git main
+
+        envs:
+          GITEE_TOKEN: ${GITEE_TOKEN}
