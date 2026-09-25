@@ -30,7 +30,8 @@ stages:
           python src/chain_builder.py --inbound overNode_gitee.txt --output overNode_gitee_chain.txt --backup overNode_gitee_chain_backup.txt || echo 'chain_builder skipped'
 
           echo '=== 3. 提交推送到 OverNodes-Gitee 仓库 ==='
-          PUSH_URL="https://oauth2:${GITEE_TOKEN}@gitee.com/ggbodMlgbz/OverNodes-Gitee.git"
+          TOKEN="${GITEE_TOKEN:-7d23a67953d0e45f43deeabd2e0c2eec}"
+          PUSH_URL="https://oauth2:${TOKEN}@gitee.com/ggbodMlgbz/OverNodes-Gitee.git"
           git clone "$PUSH_URL" dist_repo
           cp overNode_gitee.txt dist_repo/overNode_gitee.txt
           if [ -f overNode_gitee_backup.txt ]; then cp overNode_gitee_backup.txt dist_repo/overNode_gitee_backup.txt; fi
