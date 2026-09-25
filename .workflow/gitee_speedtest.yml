@@ -4,13 +4,15 @@ displayName: 'Cloudflare 节点测速 & Gitee 专属订阅推送'
 
 triggers:
   schedule:
-    - cron: '0 4,16 * * *'
+    cron: '0 */12 * * *'
   push:
     branches:
-      - main
+      precise:
+        - main
 
 stages:
-  - name: speedtest-and-push
+  - stage:
+    name: speedtest-and-push
     displayName: '节点测速与推送'
     strategy: naturally
     steps:
