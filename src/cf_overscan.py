@@ -747,27 +747,44 @@ def load_existing_actions_nodes(filepath: str) -> Dict[Tuple[str, int], List[str
     return existing_map
 
 
+def get_tcp_latency_sync(ip: str, port: int, timeout: float = 1.5) -> float:
+    """快速测量单个主机的真实 TCP 延迟 (ms)"""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    start = time.perf_counter()
+    try:
+        s.connect((ip, port))
+        lat = (time.perf_counter() - start) * 1000.0
+        return round(lat, 1)
+    except Exception:
+        return 9999.0
+    finally:
+        s.close()
+
+
 def speed_test_regions_ports(region_ips: Dict[str, List[Dict]], target_ports: List[int],
                               min_speed: float = 0.5,
                               target_domain: Optional[str] = None,
-                              existing_file: Optional[str] = None) -> List[Dict]:
+                              existing_file: Optional[str] = None) -> Tuple[List[Dict], List[Dict]]:
     """
-    地区 × 端口 双维度矩阵测速筛选 (结合【在岗留任复检】与【业务域名反代探针】)：
-    1. 优先对该地区该端口历史在岗 IP 进行真实验真，达标直接留任，达成零漂移闭环
-    2. 仅在存量失效或缺口时，才从扫描出的新候选 IP 中测速补位
+    地区 × 端口 双维度矩阵测速筛选 (公平竞技·质量优胜劣汰引擎)：
+    1. 在岗历史节点实测复检（获取真实带宽与精确 TCP 延迟）；
+    2. 绝不跳过新候选池！无论在岗是否达标，均抽取公网新候选进行真机测速同台比拼；
+    3. 质量择优竞争：延迟更低、速度更快的节点优先晋升胜出，淘汰的原在岗节点自动移入 backup 备份库。
     """
     final_selected_nodes = []
+    demoted_nodes_pool = []
 
     print(f"\n{BOLD}{CYAN}==============================================================={RESET}")
-    print(f"{BOLD}{CYAN}   [地区 × 端口] 双维度矩阵测速与保活自愈智能筛选引擎   {RESET}")
+    print(f"{BOLD}{CYAN}   [地区 × 端口] 全量质量优胜劣汰与自愈演进测速引擎   {RESET}")
     print(f"{BOLD}{CYAN}==============================================================={RESET}")
     domain_tip = f"探针域名: {target_domain}" if target_domain else "无探针"
-    print(f"[*] 测速规则: 每个地区的每个端口独立测试，精准选拔【最低延迟】与【最高吞吐】各 1 个 (每单元 2 节点)")
+    print(f"[*] 竞选规则: 同台竞争，择优录取【极限吞吐王者】与【超低延迟先锋】各 1 个 (每单元 2 节点)")
     print(f"[*] 探针状态: {domain_tip} | 达标底线: >= {min_speed} MB/s")
     if existing_file and os.path.exists(existing_file):
-        print(f"[*] 在岗留任机制: 已挂载历史文件 {os.path.basename(existing_file)}，优先复检在岗老节点！\n")
+        print(f"[*] 在岗机制: 已挂载历史文件 {os.path.basename(existing_file)}，在岗节点与新候选同台比拼，优胜劣汰！\n")
     else:
-        print(f"[*] 在岗留任机制: 未挂载历史文件，执行常规全量选拔\n")
+        print(f"[*] 在岗机制: 未挂载历史文件，执行常规全量选拔\n")
 
     existing_map = load_existing_actions_nodes(existing_file) if existing_file else {}
 
@@ -784,7 +801,7 @@ def speed_test_regions_ports(region_ips: Dict[str, List[Dict]], target_ports: Li
             print(f"  {YELLOW}▶ [测试组合] 地区: {region} ({region_name}) | 端口: {port}{RESET}")
             tested_unit_nodes = []
 
-            # 阶段 1：在岗历史节点优先真机复检 (Retention-First)
+            # 阶段 1：在岗历史节点真机复检 (获取真实延迟与带宽)
             old_ips = existing_map.get((region, port), [])
             for old_ip in old_ips:
                 sys.stdout.write(f"    [在岗复检] 探针测试 {old_ip}:{port}... ")
@@ -794,8 +811,14 @@ def speed_test_regions_ports(region_ips: Dict[str, List[Dict]], target_ports: Li
                 if target_domain:
                     is_proxy_ok = check_domain_support(old_ip, port, target_domain, timeout=2.0)
                     if not is_proxy_ok:
-                        print(f"\033[90m[反代受阻] 历史节点已失效，准备淘汰替补\033[0m")
+                        print(f"\033[90m[反代受阻] 历史节点已失效，准备淘汰\033[0m")
                         continue
+
+                # 实测在岗真实 TCP 延迟
+                real_lat = get_tcp_latency_sync(old_ip, port)
+                if real_lat >= 9999.0:
+                    print(f"\033[90m[连接超时] 历史节点网络不通，准备淘汰\033[0m")
+                    continue
 
                 # 真实下载带宽测试
                 speed = download_speed_test(old_ip, port)
@@ -804,53 +827,54 @@ def speed_test_regions_ports(region_ips: Dict[str, List[Dict]], target_ports: Li
                         'ip': old_ip,
                         'port': port,
                         'speed': speed,
-                        'latency': 80.0,
+                        'latency': real_lat,
                         'country': country_code,
-                        'pick_reason': "在岗达标留任",
+                        'pick_reason': "在岗达标备选",
                         'is_retained': True
                     })
-                    print(f"\033[92m[在岗达标留任] 实测速度: {speed:.2f} MB/s (保持在岗)\033[0m")
+                    print(f"\033[92m[在岗达标] 实测速度: {speed:.2f} MB/s | 延迟: {real_lat:.1f}ms (进入竞争池)\033[0m")
                 else:
-                    print(f"\033[90m[速度劣化] 实测: {speed:.2f} MB/s (< {min_speed} MB/s)，准备淘汰替补\033[0m")
+                    print(f"\033[90m[速度劣化] 实测: {speed:.2f} MB/s (< {min_speed} MB/s)，准备淘汰\033[0m")
 
-            # 阶段 2：检查在岗留任是否已达成配额 (每单元 2 个节点)
-            if len(tested_unit_nodes) >= 2:
-                print(f"    {GREEN}✔ 该单元在岗节点 100% 达标留任，零漂移闭环，跳过新候选测试！{RESET}")
-            else:
-                needed = 2 - len(tested_unit_nodes)
-                print(f"    {CYAN}ℹ 在岗可用 {len(tested_unit_nodes)} 个，尚缺 {needed} 个，正在从公网候选池测试替补...{RESET}")
-                max_candidates = min(len(ip_items), 35)
-                for idx, item in enumerate(ip_items[:max_candidates], 1):
-                    ip = item['ip']
-                    if ip in [n['ip'] for n in tested_unit_nodes]:
+            # 阶段 2：公网新候选池真机测试 (绝不跳过，同台竞争选拔更优节点)
+            print(f"    {CYAN}ℹ 正在从公网候选池测试新候选 IP (同台竞争，择优替换)...{RESET}")
+            max_candidates_to_test = min(len(ip_items), 20)
+            qualified_new_count = 0
+            for idx, item in enumerate(ip_items[:max_candidates_to_test], 1):
+                ip = item['ip']
+                if ip in [n['ip'] for n in tested_unit_nodes]:
+                    continue
+                lat = item['latency']
+                sys.stdout.write(f"    [{idx:>2}] 候选测试 {ip}:{port} (延迟: {lat:.1f}ms)... ")
+                sys.stdout.flush()
+
+                if target_domain:
+                    is_proxy_ok = check_domain_support(ip, port, target_domain, timeout=2.0)
+                    if not is_proxy_ok:
+                        print(f"\033[90m[反代受阻/证书不匹配] 无法反代，自动淘汰\033[0m")
                         continue
-                    lat = item['latency']
-                    sys.stdout.write(f"    [{idx:>2}] 替补候选测试 {ip}:{port} (延迟: {lat:.1f}ms)... ")
-                    sys.stdout.flush()
 
-                    if target_domain:
-                        is_proxy_ok = check_domain_support(ip, port, target_domain, timeout=2.0)
-                        if not is_proxy_ok:
-                            print(f"\033[90m[反代受阻/证书不匹配] 无法反代，自动淘汰\033[0m")
-                            continue
+                speed = download_speed_test(ip, port)
+                if speed >= min_speed:
+                    node_info = dict(item)
+                    node_info['port'] = port
+                    node_info['speed'] = speed
+                    node_info['latency'] = lat
+                    node_info['country'] = country_code
+                    node_info['pick_reason'] = "新选达标"
+                    node_info['is_retained'] = False
+                    tested_unit_nodes.append(node_info)
+                    qualified_new_count += 1
+                    print(f"\033[92m[新选达标] 实测速度: {speed:.2f} MB/s | 延迟: {lat:.1f}ms\033[0m")
+                else:
+                    print(f"\033[90m[未达标] 速度: {speed:.2f} MB/s (< {min_speed} MB/s)\033[0m")
 
-                    speed = download_speed_test(ip, port)
-                    if speed >= min_speed:
-                        node_info = dict(item)
-                        node_info['port'] = port
-                        node_info['speed'] = speed
-                        node_info['country'] = country_code
-                        node_info['pick_reason'] = "替补达标"
-                        tested_unit_nodes.append(node_info)
-                        print(f"\033[92m[业务可用] 实测速度: {speed:.2f} MB/s\033[0m")
-                    else:
-                        print(f"\033[90m[未达标] 速度: {speed:.2f} MB/s (< {min_speed} MB/s)\033[0m")
+                # 若已有至少 3 个达标新候选加入竞技，适度提前收敛节约时间
+                if qualified_new_count >= 3:
+                    break
+                time.sleep(0.05)
 
-                    if len(tested_unit_nodes) >= 3:
-                        break
-                    time.sleep(0.08)
-
-            # 阶段 3：评选优胜者
+            # 阶段 3：全量综合质量优胜劣汰选拔 (每单元选拔 2 个最佳：速度王者 + 低延迟先锋)
             if not tested_unit_nodes:
                 print(f"    {RED}--> [{region}:{port}] 未能测出达标可用节点，跳过该端口。{RESET}")
                 continue
@@ -858,44 +882,48 @@ def speed_test_regions_ports(region_ips: Dict[str, List[Dict]], target_ports: Li
             unit_selected = []
             if len(tested_unit_nodes) == 1:
                 single_node = tested_unit_nodes[0]
-                if not single_node.get('pick_reason'):
-                    single_node['pick_reason'] = "唯一达标"
+                single_node['pick_reason'] = "唯一达标优胜"
                 unit_selected.append(single_node)
             else:
-                retained_nodes = [n for n in tested_unit_nodes if n.get('is_retained')]
-                if len(retained_nodes) >= 2:
-                    unit_selected.extend(retained_nodes[:2])
-                elif len(retained_nodes) == 1:
-                    unit_selected.append(retained_nodes[0])
-                    new_candidates = [n for n in tested_unit_nodes if not n.get('is_retained')]
-                    if new_candidates:
-                        best_new = max(new_candidates, key=lambda x: x['speed'])
-                        best_new['pick_reason'] = "替补最高速"
-                        unit_selected.append(best_new)
+                # 第 1 名：绝对速度最高者 (谁速度更快谁当主力)
+                best_speed_node = max(tested_unit_nodes, key=lambda x: x['speed'])
+                remaining = [n for n in tested_unit_nodes if n['ip'] != best_speed_node['ip']]
+                
+                if remaining:
+                    # 第 2 名：在剩余达标节点中选延迟最低者 (超低延迟先锋)
+                    best_latency_node = min(remaining, key=lambda x: x['latency'])
+                    best_speed_node['pick_reason'] = "极限吞吐王者"
+                    best_latency_node['pick_reason'] = "超低延迟先锋"
+                    unit_selected = [best_speed_node, best_latency_node]
                 else:
-                    lowest_lat_node = min(tested_unit_nodes, key=lambda x: x['latency'])
-                    highest_spd_node = max(tested_unit_nodes, key=lambda x: x['speed'])
-                    if lowest_lat_node['ip'] == highest_spd_node['ip']:
-                        lowest_lat_node['pick_reason'] = "延迟最低与速度最快"
-                        unit_selected.append(lowest_lat_node)
-                        remaining = [n for n in tested_unit_nodes if n['ip'] != lowest_lat_node['ip']]
-                        if remaining:
-                            runner_up = max(remaining, key=lambda x: x['speed'])
-                            runner_up['pick_reason'] = "次优高速节点"
-                            unit_selected.append(runner_up)
-                    else:
-                        lowest_lat_node['pick_reason'] = "延迟最低"
-                        highest_spd_node['pick_reason'] = "速度最快"
-                        unit_selected.append(lowest_lat_node)
-                        unit_selected.append(highest_spd_node)
+                    best_speed_node['pick_reason'] = "综合性能最佳"
+                    unit_selected = [best_speed_node]
+
+            # 阶段 4：识别被更优新节点淘汰替换的原在岗节点，移入 backup 备份库
+            selected_ips = {p['ip'] for p in unit_selected}
+            for old_ip in old_ips:
+                if old_ip not in selected_ips:
+                    old_rec = next((n for n in tested_unit_nodes if n['ip'] == old_ip), None)
+                    spd_str = f"速度: {old_rec['speed']:.2f} MB/s" if old_rec else "失效"
+                    lat_str = f"延迟: {old_rec['latency']:.1f}ms" if old_rec else "超时"
+                    print(f"    {YELLOW}⚡ [优选替换] 原在岗节点 {old_ip}:{port} ({spd_str}, {lat_str}) 已被更优新节点替换淘汰，已移入 backup 备份库！{RESET}")
+                    demoted_node = {
+                        'ip': old_ip,
+                        'port': port,
+                        'country': country_code,
+                        'speed': old_rec['speed'] if old_rec else 0.0,
+                        'latency': old_rec['latency'] if old_rec else 9999.0,
+                        'is_demoted': True
+                    }
+                    demoted_nodes_pool.append(demoted_node)
 
             for pick in unit_selected:
                 final_selected_nodes.append(pick)
-                status_label = "[在岗留任]" if pick.get("is_retained") else "[新选入位]"
+                status_label = "[在岗胜出]" if pick.get("is_retained") else "[新选晋升]"
                 print(f"    {GREEN}✔ {status_label} 入选: {pick['ip']}:{pick['port']} [{pick['country']}] "
-                      f"速度: {pick['speed']:.2f} MB/s ({pick.get('pick_reason')}){RESET}")
+                      f"速度: {pick['speed']:.2f} MB/s | 延迟: {pick['latency']:.1f}ms ({pick.get('pick_reason')}){RESET}")
 
-    return final_selected_nodes
+    return final_selected_nodes, demoted_nodes_pool
 
 def rotate_and_save_nodes(
     qualified_nodes: List[Dict],
@@ -903,7 +931,8 @@ def rotate_and_save_nodes(
     base_dir: Optional[str] = None,
     output_file: str = "overNode.txt",
     backup_file: Optional[str] = "overNode_backup.txt",
-    node_tag: Optional[str] = None
+    node_tag: Optional[str] = None,
+    demoted_nodes: Optional[List[Dict]] = None
 ) -> Tuple[str, Optional[str], Optional[str]]:
     """
     格式化节点并写入：
@@ -974,7 +1003,19 @@ def rotate_and_save_nodes(
                         backup_dict[key] = line
             except Exception:
                 pass
-        # 本次最新节点覆盖/更新历史去重库
+
+        # 将被更优新节点替换淘汰的原在岗节点，妥善移入备份库（作为历史沉淀资产）
+        if demoted_nodes:
+            for dn in demoted_nodes:
+                d_ip = dn['ip']
+                d_port = dn['port']
+                d_country = dn.get('country', 'US')
+                d_speed = dn.get('speed', 0.0)
+                key = f"{d_ip}:{d_port}"
+                if key not in backup_dict:
+                    backup_dict[key] = f"{d_ip}:{d_port}#{d_country}[{d_speed:.2f}MB/S]-{d_port}"
+
+        # 本次最新优选胜出的节点覆盖/更新历史去重库
         for line in overnode_lines:
             key = line.split("#")[0].strip()
             backup_dict[key] = line
@@ -1221,10 +1262,17 @@ def git_commit_and_push(commit_msg: str, repo_root: Optional[str] = None, node_c
 
         # 优先直连推送
         print("[Git] 正在推送到 GitHub 远程仓库...")
-        push_res = subprocess.run(["git", "push"], cwd=repo_root, capture_output=True, text=True)
+        push_res = subprocess.run(["git", "push", "origin", "main"], cwd=repo_root, capture_output=True, text=True)
         if push_res.returncode == 0:
             print("[Git] \033[92m已成功推送到 GitHub 远程仓库！\033[0m")
-            write_execution_log("SUCCESS", f"已成功直连推送到 GitHub 远程仓库，成功上线 {node_count} 个节点", repo_root=repo_root)
+            # 同步推送到 Gitee (若配置了 gitee 远程)
+            try:
+                gitee_push = subprocess.run(["git", "push", "gitee", "main"], cwd=repo_root, capture_output=True, text=True)
+                if gitee_push.returncode == 0:
+                    print("[Git] \033[92m已成功同步推送到 Gitee 镜像仓库！\033[0m")
+            except Exception:
+                pass
+            write_execution_log("SUCCESS", f"已成功推送到 GitHub/Gitee 远程仓库，成功上线 {node_count} 个节点", repo_root=repo_root)
             return
 
         # 直连受阻自动切换代理通道重试
@@ -1239,15 +1287,23 @@ def git_commit_and_push(commit_msg: str, repo_root: Optional[str] = None, node_c
                 test_sock.close()
                 if is_open:
                     print(f"[Git] 直连 GitHub 受阻，自动切换本地代理端口 127.0.0.1:{p} 重试推送...")
-                    proxy_cmd = ["git", "-c", f"http.proxy=http://127.0.0.1:{p}", "-c", "http.sslVerify=false", "push"]
+                    proxy_cmd = ["git", "-c", f"http.proxy=http://127.0.0.1:{p}", "-c", "http.sslVerify=false", "push", "origin", "main"]
                     p_res = subprocess.run(proxy_cmd, cwd=repo_root, capture_output=True, text=True)
                     if p_res.returncode == 0:
                         print("[Git] \033[92m已成功通过本地代理通道推送到 GitHub 远程仓库！\033[0m")
-                        write_execution_log("SUCCESS", f"已通过本地代理 127.0.0.1:{p} 成功推送到 GitHub 远程仓库，成功上线 {node_count} 个节点", repo_root=repo_root)
+                        try:
+                            gitee_push = subprocess.run(["git", "push", "gitee", "main"], cwd=repo_root, capture_output=True, text=True)
+                            if gitee_push.returncode == 0:
+                                print("[Git] \033[92m已成功同步推送到 Gitee 镜像仓库！\033[0m")
+                        except Exception:
+                            pass
+                        write_execution_log("SUCCESS", f"已通过本地代理成功推送到 GitHub/Gitee 远程仓库，成功上线 {node_count} 个节点", repo_root=repo_root)
                         proxy_pushed = True
                         break
                     else:
                         last_proxy_err = p_res.stderr.strip()
+            except Exception:
+                continue
             except Exception:
                 continue
 
@@ -1694,7 +1750,7 @@ def main():
                 existing_file = candidate_f
                 break
 
-    qualified_nodes = speed_test_regions_ports(
+    qualified_nodes, demoted_nodes = speed_test_regions_ports(
         region_ips=region_ips,
         target_ports=target_ports,
         min_speed=args.min_speed,
@@ -1715,7 +1771,8 @@ def main():
         base_dir=project_root,
         output_file=output_file,
         backup_file=backup_file,
-        node_tag=node_tag
+        node_tag=node_tag,
+        demoted_nodes=demoted_nodes
     )
     print("\n" + "=" * 55)
     print(f"[*] 成功优选出 {len(qualified_nodes)} 个双优核心节点！")

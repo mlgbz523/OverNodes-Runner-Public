@@ -55,50 +55,59 @@ def test_ip_latency(ip: str, port: int = 443, timeout: float = 1.2) -> float:
 
 def parse_actions_inbound(filepath: str) -> Dict[str, List[Dict]]:
     """
-    读取 Actions 优选文件，按 SG 和 US 归类，并按 IP 聚合支持的端口
+    读取 Actions 优选文件（支持逗号分隔多文件，如 overNode_actions.txt,public_repo/overNode.txt），
+    按 SG 和 US 归类，并按 IP 聚合支持的端口
     """
-    if not os.path.exists(filepath):
-        if os.path.exists(os.path.basename(filepath)):
-            filepath = os.path.basename(filepath)
+    raw_paths = [p.strip() for p in filepath.split(",") if p.strip()]
+    valid_files = []
+    for p in raw_paths:
+        if os.path.exists(p):
+            valid_files.append(p)
+        elif os.path.exists(os.path.basename(p)):
+            valid_files.append(os.path.basename(p))
+        elif os.path.exists(os.path.join("public_repo", os.path.basename(p))):
+            valid_files.append(os.path.join("public_repo", os.path.basename(p)))
         else:
-            print(f"[!] 找不到入站节点文件: {filepath}")
-            return {"SG": [], "US": []}
+            print(f"[!] 找不到指定入站节点文件: {p}")
 
-    print(f"[*] 正在载入 Actions 纯净入站优选节点: {filepath}")
+    if not valid_files:
+        print(f"[!] 错误: 所有指定的入站节点文件均不存在: {filepath}")
+        return {"SG": [], "US": []}
+
     by_region = {"SG": [], "US": []}
-    
-    # 记录出现顺序和端口
     ip_order = {"SG": [], "US": []}
     ip_ports = {"SG": {}, "US": {}}
 
-    with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            parts = line.split("#")
-            entry = parts[0].strip()
-            tag = parts[1].strip() if len(parts) > 1 else ""
-
-            if ":" in entry:
-                ip, port_str = entry.split(":")
-                try:
-                    port = int(port_str)
-                except ValueError:
+    for fpath in valid_files:
+        print(f"[*] 正在载入入站优选节点: {fpath}")
+        with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
                     continue
+                parts = line.split("#")
+                entry = parts[0].strip()
+                tag = parts[1].strip() if len(parts) > 1 else ""
 
-                region = None
-                if "SG" in tag or "🇸🇬" in tag:
-                    region = "SG"
-                elif "US" in tag or "🇺🇸" in tag:
-                    region = "US"
+                if ":" in entry:
+                    ip, port_str = entry.split(":")
+                    try:
+                        port = int(port_str)
+                    except ValueError:
+                        continue
 
-                if region:
-                    if ip not in ip_order[region]:
-                        ip_order[region].append(ip)
-                        ip_ports[region][ip] = []
-                    if port not in ip_ports[region][ip]:
-                        ip_ports[region][ip].append(port)
+                    region = None
+                    if "SG" in tag or "🇸🇬" in tag:
+                        region = "SG"
+                    elif "US" in tag or "🇺🇸" in tag:
+                        region = "US"
+
+                    if region:
+                        if ip not in ip_order[region]:
+                            ip_order[region].append(ip)
+                            ip_ports[region][ip] = []
+                        if port not in ip_ports[region][ip]:
+                            ip_ports[region][ip].append(port)
 
     # 针对每个地区，对 IP 进行健康优选（挑选延迟最低、最快的前 2 台主机）
     for region in ["SG", "US"]:
@@ -141,11 +150,15 @@ def parse_actions_inbound(filepath: str) -> Dict[str, List[Dict]]:
 
 def parse_socks5_anchor(filepath: str) -> str:
     """提取在岗 SOCKS5 中经过测速认证的第一顺位王者代理作为美国链式中继锚点"""
-    if not os.path.exists(filepath):
-        print(f"[!] SOCKS5 代理文件不存在: {filepath}")
-        return ""
+    target_path = filepath
+    if not os.path.exists(target_path):
+        if os.path.exists(os.path.basename(target_path)):
+            target_path = os.path.basename(target_path)
+        else:
+            print(f"[!] SOCKS5 代理文件不存在: {filepath}")
+            return ""
 
-    with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+    with open(target_path, "r", encoding="utf-8", errors="ignore") as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#"):
