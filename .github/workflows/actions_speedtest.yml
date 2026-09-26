@@ -73,6 +73,7 @@ jobs:
             --timeout 4.0 \
             --concurrency 60 \
             --allowed-countries US,SG,HK \
+            --cf-ips overNode_actions.txt \
             $WORKER_ARG
 
           # 熔断防御机制：若本次洗练未产出节点或异常，自动注入保底黄金节点

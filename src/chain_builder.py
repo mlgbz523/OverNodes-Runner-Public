@@ -190,9 +190,13 @@ def parse_socks5_file(filepath: str, allowed_countries: Optional[List[str]] = No
             entry_part = parts[0].strip()
             tag = parts[1].strip() if len(parts) > 1 else ""
 
-            # 提取国家代码
+            # 提取国家代码和机房信息
+            # 格式: US-QUADRANET-[socks5]
             country_match = re.match(r"^([A-Z]{2})", tag)
             country = country_match.group(1).upper() if country_match else "UN"
+            
+            isp_match = re.match(r"^[A-Z]{2}-([A-Z0-9_]+)-", tag)
+            isp = isp_match.group(1) if isp_match else "S5"
 
             # 严格国家白名单过滤
             if allowed_set and country not in allowed_set:
@@ -223,7 +227,8 @@ def parse_socks5_file(filepath: str, allowed_countries: Optional[List[str]] = No
                 "port": port,
                 "username": username,
                 "password": password,
-                "entry": proxy_entry
+                "entry": proxy_entry,
+                "isp": isp
             })
 
     for cc, proxies in by_country.items():
@@ -261,7 +266,7 @@ def assemble_chains(
             ip = host["ip"]
             rank = host["rank"]
             for port in host["ports"]:
-                tag = f"{flag} {region}-直连-[{rank:02d}]:{port}"
+                tag = f"{flag} {region} 直连-{rank:02d} ({port})"
                 direct_lines.append(f"{ip}:{port}#{tag}")
         region_count = sum(len(h["ports"]) for h in hosts)
         print(f"  + {flag} {region}: {len(hosts)} 台主机 × 共 {region_count} 个端口节点")
@@ -303,14 +308,20 @@ def assemble_chains(
 
         for socks_rank, proxy in enumerate(proxies, 1):
             socks5_uri = f"socks5://{proxy['entry']}"
-            # 使用中继 IP 的前1台主机（控制节点数量），搭配精简端口
+            # 获取 ISP/机房标签，若无则使用 S5
+            # 注意：新版的 socks5_scanner.py 生成格式如: 107.150.41.226:18080#US-QUADRANET-[socks5]
+            # 我们在 parse 时可以将其解析出来。先尝试在 proxy.get("tag") 或者用 proxy["entry"] 判断
+            
+            # 使用中继 IP 的第1台主机，仅使用 443 端口进行装配（去重精简）
             for host in relay_hosts[:1]:
                 ip = host["ip"]
-                for port in chain_ports:
-                    tag = f"{flag} {country}-S5-[{socks_rank:02d}]:{port}"
-                    chain_entry = f"{ip}:{port}#{tag}${socks5_uri}"
-                    chain_lines.append(chain_entry)
-                    country_chain_count += 1
+                port = 443 if 443 in chain_ports else chain_ports[0]
+                
+                isp = proxy.get("isp", "S5")
+                tag = f"{flag} {country} 链式-{isp}-{socks_rank:02d}"
+                chain_entry = f"{ip}:{port}#{tag}${socks5_uri}"
+                chain_lines.append(chain_entry)
+                country_chain_count += 1
 
         print(f"  + {flag} {country}: {len(proxies)} 个 SOCKS5 × 装配 {country_chain_count} 个链式节点")
 
