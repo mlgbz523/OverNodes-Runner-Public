@@ -47,31 +47,27 @@ jobs:
             --output overNode_actions.txt \
             --backup-file overNode_actions_backup.txt \
             --node-tag Actions \
-            --regions US,DE,SG \
+            --regions SG,US \
             --domain "$PROBE_DOMAIN" \
             --target-count 6 \
             --min-speed 0.5 \
             --force \
             --no-push
 
-      - name: 执行出站 SOCKS5 真实数据吞吐量压测 (在岗优先复检保活 + 选拔带宽王者)
+      - name: 保持专属出站 SOCKS5 节点 (固定使用 107.150.41.226:18080)
         run: |
-          python src/socks5_scanner.py \
-            --existing-file public_repo/socks5.txt \
-            --output socks5.txt \
-            --count 6 \
-            --concurrency 80 \
-            --min-speed 0.2 \
-            --allowed-countries US,SG,HK
+          echo "107.150.41.226:18080#US-[socks5]" > socks5.txt
+          echo "107.150.41.226:18080#US-[socks5]" > socks5_backup.txt
 
-      - name: 执行链式订阅装配合成 (全量入站融合 + 单一王者代理统一定锚)
+      - name: 执行链式订阅装配合成 (新加坡/美国优选入站 + 专属美国S5)
         run: |
           python src/chain_builder.py \
             --inbound overNode_actions.txt,public_repo/overNode.txt \
             --socks5 socks5.txt \
             --output overNode_chain.txt \
             --backup overNode_chain_backup.txt \
-            --allowed-countries US,SG,HK
+            --inbound-regions SG,US \
+            --allowed-countries US
 
       - name: 跨仓库推送到公开分发仓库
         run: |

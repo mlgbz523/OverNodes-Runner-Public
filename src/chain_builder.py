@@ -70,11 +70,12 @@ def test_ip_latency(ip: str, port: int = 443, timeout: float = 1.2) -> float:
         s.close()
 
 
-def parse_actions_inbound(filepath: str) -> Dict[str, List[Dict]]:
+def parse_actions_inbound(filepath: str, inbound_regions: Optional[List[str]] = None) -> Dict[str, List[Dict]]:
     """
     读取 Actions 优选文件（支持逗号分隔多文件），
-    按国家/地区分组归类，每地区保留延迟最低的前 2 个主机
+    按国家/地区分组归类，每地区保留延迟最低的前 2 个主机 (严格限制入站地区白名单)
     """
+    valid_regions = set(r.strip().upper() for r in inbound_regions) if inbound_regions else None
     raw_paths = [p.strip() for p in filepath.split(",") if p.strip()]
     valid_files = []
     for p in raw_paths:
@@ -115,9 +116,11 @@ def parse_actions_inbound(filepath: str) -> Dict[str, List[Dict]]:
 
                     # 从 tag 中提取国家代码 (前两个大写字母)
                     region_match = re.match(r"^(?:🇸🇬|🇺🇸|🇩🇪|🇬🇧|🇯🇵|🇭🇰|🇰🇷|🇫🇷|🌐)?\s*([A-Z]{2})", tag)
-                    region = region_match.group(1) if region_match else None
+                    region = region_match.group(1).upper() if region_match else None
 
                     if region:
+                        if valid_regions and region not in valid_regions:
+                            continue
                         if region not in ip_order:
                             ip_order[region] = []
                             ip_ports[region] = {}
@@ -323,22 +326,25 @@ def main():
     parser.add_argument("--backup", "-b", default="overNode_chain_backup.txt", help="链式订阅软备份文件")
     parser.add_argument("--chain-ports", default="443,2053,8443", help="链式节点使用的端口列表 (逗号分隔，默认 443,2053,8443)")
     parser.add_argument("--allowed-countries", default="US,SG,HK", help="仅允许这些落地国的 SOCKS5 组装链式节点 (逗号分隔，默认 US,SG,HK)")
+    parser.add_argument("--inbound-regions", default="SG,US", help="仅保留这些地区的入站直连节点 (逗号分隔，默认 SG,US)")
     args = parser.parse_args()
 
     chain_ports = [int(p.strip()) for p in args.chain_ports.split(",") if p.strip()]
     allowed_countries = [c.strip().upper() for c in args.allowed_countries.split(",") if c.strip()]
+    inbound_regions = [r.strip().upper() for r in args.inbound_regions.split(",") if r.strip()]
 
     print("=" * 60)
     print("  OverNode 多国 SOCKS5 落地 × CF 直连双轨装配引擎")
     print(f"  入站节点文件: {args.inbound}")
     print(f"  出站代理文件: {args.socks5}")
+    print(f"  入站优选地区: {inbound_regions}")
     print(f"  落地国白名单: {allowed_countries}")
     print(f"  链式端口矩阵: {chain_ports}")
     print(f"  目标输出订阅: {args.output}")
     print("=" * 60)
 
-    # 1. 解析 CF 入站优选节点
-    by_region = parse_actions_inbound(args.inbound)
+    # 1. 解析 CF 入站优选节点 (严格限制入站地区)
+    by_region = parse_actions_inbound(args.inbound, inbound_regions=inbound_regions)
     if not by_region:
         print("[!] 错误：未读取到有效的入站节点！")
         return
