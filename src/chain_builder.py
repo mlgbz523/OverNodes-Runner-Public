@@ -300,7 +300,7 @@ def assemble_chains(
             print("  [!] 无可用 CF 入站 IP，跳过链式装配")
             return direct_lines, chain_lines
 
-    # 为每个 SOCKS5 落地国组装链式节点
+    # 为每个 SOCKS5 落地国组装链式节点 (多主机 × 多高可用端口多组匹配)
     for country in sorted(socks5_by_country.keys()):
         proxies = socks5_by_country[country]
         flag = get_flag(country)
@@ -310,16 +310,17 @@ def assemble_chains(
             socks5_uri = f"socks5://{proxy['entry']}"
             letter = chr(96 + socks_rank) if 1 <= socks_rank <= 26 else str(socks_rank)
             
-            # 使用中继 IP 的所有主机进行装配，实现多组匹配
+            # 使用中继 IP 的所有主机与端口进行装配，实现多组交叉匹配
             for host in relay_hosts:
                 ip = host["ip"]
-                port = 443 if 443 in chain_ports else chain_ports[0]
                 cf_rank = host["rank"]
                 
-                tag = f"{flag} S5_{letter}{prefer_region.lower()}{cf_rank:02d}"
-                chain_entry = f"{ip}:{port}#{tag}${socks5_uri}"
-                chain_lines.append(chain_entry)
-                country_chain_count += 1
+                # 优先使用 chain_ports 列表中指定的端口
+                for port in chain_ports:
+                    tag = f"{flag} S5_{letter}{prefer_region.lower()[:2]}{cf_rank:02d}:{port}"
+                    chain_entry = f"{ip}:{port}#{tag}${socks5_uri}"
+                    chain_lines.append(chain_entry)
+                    country_chain_count += 1
 
         print(f"  + {flag} {country}: {len(proxies)} 个 SOCKS5 × 装配 {country_chain_count} 个链式节点")
 
@@ -333,7 +334,7 @@ def main():
     parser.add_argument("--socks5", "-s", default="socks5.txt", help="出站 SOCKS5 代理文件")
     parser.add_argument("--output", "-o", default="overNode_chain.txt", help="输出链式订阅文件")
     parser.add_argument("--backup", "-b", default="overNode_chain_backup.txt", help="链式订阅软备份文件")
-    parser.add_argument("--chain-ports", default="443,2053,8443", help="链式节点使用的端口列表 (逗号分隔，默认 443,2053,8443)")
+    parser.add_argument("--chain-ports", default="2096,8443,2053,443", help="链式节点使用的端口列表 (逗号分隔，默认 2096,8443,2053,443)")
     parser.add_argument("--allowed-countries", default="US,SG,HK", help="仅允许这些落地国的 SOCKS5 组装链式节点 (逗号分隔，默认 US,SG,HK)")
     parser.add_argument("--inbound-regions", default="SG,US", help="仅保留这些地区的入站直连节点 (逗号分隔，默认 SG,US)")
     args = parser.parse_args()

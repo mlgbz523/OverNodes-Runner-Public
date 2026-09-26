@@ -91,7 +91,8 @@ jobs:
             --output overNode_chain.txt \
             --backup overNode_chain_backup.txt \
             --inbound-regions SG,US \
-            --allowed-countries US
+            --allowed-countries US \
+            --chain-ports 2096,8443,2053,443
 
       - name: 跨仓库推送到公开分发仓库
         run: |
