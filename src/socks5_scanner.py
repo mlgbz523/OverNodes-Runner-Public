@@ -482,6 +482,25 @@ class Socks5Scanner:
             loop = asyncio.get_running_loop()
             return await loop.run_in_executor(self.executor, self.probe_node_full, candidate)
 
+    def batch_asn_lookup(self, ips: List[str]) -> Dict[str, str]:
+        """批量查询 IP 的 ASN/ISP 信息，反推过滤肉鸡"""
+        if not ips:
+            return {}
+        result = {}
+        for i in range(0, len(ips), 100):
+            batch = ips[i:i+100]
+            try:
+                data = json.dumps([{"query": ip, "fields": "query,isp,org,as"} for ip in batch]).encode('utf-8')
+                req = urllib.request.Request("http://ip-api.com/batch", data=data, headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    resp_data = json.loads(resp.read().decode('utf-8'))
+                    for item in resp_data:
+                        org_info = f"{item.get('as', '')} {item.get('org', '')} {item.get('isp', '')}".upper()
+                        result[item['query']] = org_info
+            except Exception as e:
+                print(f"[!] 批量 ASN 查询失败: {e}", flush=True)
+        return result
+
     async def scan(self) -> List[Dict]:
         survived_nodes = []
         existing_keys = set()
@@ -544,7 +563,37 @@ class Socks5Scanner:
             r for r in results 
             if r is not None and r["speed_mb"] > 0.1 and (not self.allowed_countries or r["country"] in self.allowed_countries)
         ]
-        print(f"[*] 探测完毕！候选池产出 {len(valid_replacements)} 个符合白名单 ({','.join(self.allowed_countries)}) 的活体节点", flush=True)
+        print(f"[*] 探测完毕！候选池产出 {len(valid_replacements)} 个符合白名单 ({','.join(self.allowed_countries)}) 的初步活体节点", flush=True)
+
+        # === 核心反推法：ASN/ISP 机房提纯 ===
+        if valid_replacements:
+            print("[*] 开始进行反推提纯：批量查询存活节点的 ASN 归属，剔除垃圾家庭宽带...", flush=True)
+            alive_ips = list(set([n["host"] for n in valid_replacements]))
+            org_map = self.batch_asn_lookup(alive_ips)
+            
+            datacenter_keywords = [
+                "DIGITALOCEAN", "CHOOPA", "VULTR", "LINODE", "QUADRANET", 
+                "AMAZON", "GOOGLE", "ORACLE", "OVH", "HETZNER", "MULTACOM", 
+                "COGENT", "ALIBABA", "TENCENT", "CLOUDFLARE", "HOSTING", 
+                "SERVER", "DATACENTER", "LEASEWEB", "FASTLY", "MICROSOFT", 
+                "AZURE", "ZENLAYER", "IPXO", "INTERSERVER"
+            ]
+            
+            purified_nodes = []
+            for n in valid_replacements:
+                ip = n["host"]
+                org_info = org_map.get(ip, "")
+                hit_kw = next((kw for kw in datacenter_keywords if kw in org_info), None)
+                if hit_kw:
+                    n["isp_tag"] = hit_kw
+                    purified_nodes.append(n)
+            
+            if purified_nodes:
+                print(f"[+] 反推提纯完毕！从 {len(valid_replacements)} 个杂乱节点中，精准洗出 {len(purified_nodes)} 个机房专属节点！", flush=True)
+                valid_replacements = purified_nodes
+            else:
+                print(f"[!] 提示：公网候选暂无严格机房关键词命中，执行弹性容错保护，保留速度最佳的前 {min(len(valid_replacements), 3)} 个活体节点！", flush=True)
+                valid_replacements = valid_replacements[:3]
 
         # 阶段三：多国均衡与按吞吐量定拔 (严格过滤白名单)
         all_pool = [n for n in (survived_nodes + valid_replacements) if (not self.allowed_countries or n["country"] in self.allowed_countries)]
