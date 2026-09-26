@@ -30,6 +30,7 @@ import shutil
 import time
 from typing import List, Dict, Tuple, Optional
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 终端 UTF-8 保障
 if sys.platform.startswith('win'):
@@ -326,6 +327,96 @@ def assemble_chains(
     return direct_lines, chain_lines
 
 
+def verify_and_rank_chains(
+    chain_lines: List[str],
+    timeout: float = 2.5,
+    max_workers: int = 16
+) -> List[str]:
+    """
+    对装配好的链式节点执行聚合验证与质量排序 (端到端连通与延迟测评)：
+    1. 并发探测前置 Cloudflare IP:Port 与出站 SOCKS5 节点的连通性与握手响应；
+    2. 淘汰超时不可达的节点组合；
+    3. 按全链路综合延迟升序排序，使排在前面的链式节点品质最优！
+    """
+    if not chain_lines:
+        return []
+
+    print(f"\n{'='*60}")
+    print(f"  [聚合验证] 正在对 {len(chain_lines)} 个链式组合执行链路质量测评...")
+    print(f"{'='*60}")
+
+    s5_cache: Dict[str, float] = {}
+
+    def test_single_chain(line: str) -> Optional[Tuple[str, float]]:
+        try:
+            cf_part, s5_part = line.split("$", 1)
+            cf_entry = cf_part.split("#")[0].strip()
+            cf_ip, cf_p_str = cf_entry.split(":")
+            cf_port = int(cf_p_str)
+
+            # 1. 测定前置 CF 端口 TCP 延迟
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(timeout)
+            t0 = time.perf_counter()
+            s.connect((cf_ip, cf_port))
+            cf_latency = (time.perf_counter() - t0) * 1000.0
+            s.close()
+
+            # 2. 测定 SOCKS5 延迟 (含缓存，避免高频并发击垮目标)
+            s5_uri = s5_part.strip()
+            if s5_uri not in s5_cache:
+                s5_host_port = s5_uri
+                if s5_host_port.startswith("socks5://"):
+                    s5_host_port = s5_host_port[9:]
+                if "@" in s5_host_port:
+                    s5_host_port = s5_host_port.split("@", 1)[1]
+                s5_h, s5_p_str = s5_host_port.split(":")
+                s5_p = int(s5_p_str)
+
+                s2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s2.settimeout(timeout)
+                t1 = time.perf_counter()
+                s2.connect((s5_h, s5_p))
+                s2.sendall(b"\x05\x01\x00")
+                resp = s2.recv(2)
+                s5_latency = (time.perf_counter() - t1) * 1000.0 if (resp and resp[0] == 5) else 9999.0
+                s2.close()
+                s5_cache[s5_uri] = s5_latency
+            else:
+                s5_latency = s5_cache[s5_uri]
+
+            if s5_latency >= 9999.0:
+                return None
+
+            composite_latency = cf_latency + s5_latency
+            return (line, composite_latency)
+        except Exception:
+            return None
+
+    results = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(test_single_chain, line): line for line in chain_lines}
+        for fut in as_completed(futures):
+            res = fut.result()
+            if res is not None:
+                results.append(res)
+
+    if not results:
+        print("  [!] ⚠️ 聚合验证未测出可通节点，保留原装配列表兜底。")
+        return chain_lines
+
+    # 按综合延迟升序排序 (最优排在最前面)
+    results.sort(key=lambda x: x[1])
+
+    print(f"  [+] 聚合验证成功通过: {len(results)}/{len(chain_lines)} 个优质链式节点")
+    for idx, (node_line, lat) in enumerate(results[:5], 1):
+        tag_match = re.search(r"#([^$]+)", node_line)
+        tag_str = tag_match.group(1) if tag_match else ""
+        print(f"      [{idx:02d}] {tag_str} -> 综合延迟: {lat:.1f}ms")
+
+    return [r[0] for r in results]
+
+
 def main():
     parser = argparse.ArgumentParser(description="OverNode Multi-Country Chain Assembler")
     parser.add_argument("--inbound", "-i", default="overNode_actions.txt", help="入站优选节点文件 (逗号分隔多文件)")
@@ -335,6 +426,8 @@ def main():
     parser.add_argument("--chain-ports", default="2096,8443,2053,443", help="链式节点使用的端口列表 (逗号分隔，默认 2096,8443,2053,443)")
     parser.add_argument("--allowed-countries", default="US,SG,HK", help="仅允许这些落地国的 SOCKS5 组装链式节点 (逗号分隔，默认 US,SG,HK)")
     parser.add_argument("--inbound-regions", default="SG,US", help="仅保留这些地区的入站直连节点 (逗号分隔，默认 SG,US)")
+    parser.add_argument("--verify", action="store_true", help="启用链式节点聚合验证与延迟优选排序")
+    parser.add_argument("--verify-timeout", type=float, default=2.5, help="聚合验证超时时间 (秒，默认 2.5)")
     args = parser.parse_args()
 
     chain_ports = [int(p.strip()) for p in args.chain_ports.split(",") if p.strip()]
@@ -348,6 +441,7 @@ def main():
     print(f"  入站优选地区: {inbound_regions}")
     print(f"  落地国白名单: {allowed_countries}")
     print(f"  链式端口矩阵: {chain_ports}")
+    print(f"  聚合质量验证: {'开启' if args.verify else '关闭'}")
     print(f"  目标输出订阅: {args.output}")
     print("=" * 60)
 
@@ -363,7 +457,11 @@ def main():
     # 3. 双轨装配
     direct_lines, chain_lines = assemble_chains(by_region, socks5_by_country, chain_ports)
 
-    # 4. 合并输出：直连节点在前，链式节点在后
+    # 4. 聚合验证与质量排序 (若启用)
+    if args.verify and chain_lines:
+        chain_lines = verify_and_rank_chains(chain_lines, timeout=args.verify_timeout)
+
+    # 5. 合并输出：直连节点在前，链式节点在后
     all_lines = direct_lines + chain_lines
 
     if not all_lines:

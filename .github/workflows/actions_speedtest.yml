@@ -34,7 +34,20 @@ jobs:
           python -m pip install --upgrade pip
           pip install aiohttp
 
-      - name: 执行入站优选测速探针 (在岗优先复检保活 + 劣化增量替补)
+      - name: 1. SOCKS5 先检保活与智能替补 (在岗优先实测复检)
+        env:
+          PROBE_DOMAIN: ${{ secrets.PROBE_DOMAIN }}
+        run: |
+          python src/socks5_preflight.py \
+            --current "107.150.41.226:18080" \
+            --domain "$PROBE_DOMAIN" \
+            --output socks5.txt \
+            --backup socks5_backup.txt \
+            --existing-file public_repo/socks5.txt \
+            --min-speed 0.3 \
+            --fallback-scan
+
+      - name: 2. 执行入站优选测速探针 (每端口独立精选 + 下载节点提纯)
         env:
           PROBE_DOMAIN: ${{ secrets.PROBE_DOMAIN }}
         run: |
@@ -46,6 +59,7 @@ jobs:
             --existing-file public_repo/overNode_actions.txt \
             --output overNode_actions.txt \
             --backup-file overNode_actions_backup.txt \
+            --download-output overNode_download.txt \
             --node-tag Actions \
             --regions SG,US \
             --domain "$PROBE_DOMAIN" \
@@ -54,12 +68,7 @@ jobs:
             --force \
             --no-push
 
-      - name: 固化高可用黄金 SOCKS5 机房节点 (107.150.41.226)
-        run: |
-          echo "107.150.41.226:18080#US-[socks5]" > socks5.txt
-          cp socks5.txt socks5_backup.txt
-
-      - name: 执行链式订阅装配合成 (新加坡/美国优选入站 + 专属美国S5)
+      - name: 3. 执行链式订阅装配合成与聚合质量验证 (端到端实测最优排序)
         run: |
           python src/chain_builder.py \
             --inbound overNode_actions.txt,docs/ips_cfOverScan.txt \
@@ -68,14 +77,20 @@ jobs:
             --backup overNode_chain_backup.txt \
             --inbound-regions SG,US \
             --allowed-countries US \
-            --chain-ports 2096,8443,2053,443
+            --chain-ports 2096,8443,2053,443 \
+            --verify
 
-      - name: 跨仓库推送到公开分发仓库
+      - name: 4. 跨仓库推送到公开分发仓库 (含下载专用优选节点)
         run: |
           has_updates=0
           if [ -f overNode_actions.txt ]; then
             cp overNode_actions.txt public_repo/overNode_actions.txt
             [ -f overNode_actions_backup.txt ] && cp overNode_actions_backup.txt public_repo/overNode_actions_backup.txt
+            has_updates=1
+          fi
+
+          if [ -f overNode_download.txt ]; then
+            cp overNode_download.txt public_repo/overNode_download.txt
             has_updates=1
           fi
 
@@ -102,15 +117,16 @@ jobs:
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git add overNode_actions.txt socks5.txt overNode_chain.txt ACL4SSR_Custom_Advanced.ini
             [ -f overNode_actions_backup.txt ] && git add overNode_actions_backup.txt
+            [ -f overNode_download.txt ] && git add overNode_download.txt
             [ -f socks5_backup.txt ] && git add socks5_backup.txt
             [ -f overNode_chain_backup.txt ] && git add overNode_chain_backup.txt
 
             if git diff --staged --quiet; then
-              echo "[+] 节点、SOCKS5 与链式订阅内容无变动，无需推送。"
+              echo "[+] 节点、下载专线、SOCKS5 与链式订阅内容无变动，无需推送。"
             else
-              git commit -m "Auto-update Cloudflare nodes, SOCKS5 & Chain subscriptions: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+              git commit -m "Auto-update Cloudflare nodes, download nodes, SOCKS5 & Chain subscriptions: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
               git push origin main
-              echo "[+] 🚀 跨仓库推送成功！公开订阅、SOCKS5 与链式装配已实时同步。"
+              echo "[+] 🚀 跨仓库推送成功！公开订阅、下载专线、SOCKS5 与链式装配已实时同步。"
             fi
           else
             echo "[-] 测速未生成结果文件！"

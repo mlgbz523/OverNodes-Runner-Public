@@ -787,6 +787,7 @@ def speed_test_regions_ports(region_ips: Dict[str, List[Dict]], target_ports: Li
         print(f"[*] 在岗机制: 未挂载历史文件，执行常规全量选拔\n")
 
     existing_map = load_existing_actions_nodes(existing_file) if existing_file else {}
+    allocated_ips_by_region: Dict[str, set] = {r: set() for r in region_ips.keys()}
 
     for region, ip_items in region_ips.items():
         region_name = get_system_tag(region)
@@ -874,20 +875,32 @@ def speed_test_regions_ports(region_ips: Dict[str, List[Dict]], target_ports: Li
                     break
                 time.sleep(0.05)
 
-            # 阶段 3：全量综合质量优胜劣汰选拔 (每单元选拔 2 个最佳：速度王者 + 低延迟先锋)
+            # 阶段 3：全量综合质量优胜劣汰选拔 (每端口独立精选：速度王者 + 低延迟先锋，且优先保障 IP 多样性)
             if not tested_unit_nodes:
                 print(f"    {RED}--> [{region}:{port}] 未能测出达标可用节点，跳过该端口。{RESET}")
                 continue
 
+            already_allocated = allocated_ips_by_region.get(region, set())
+            fresh_candidates = [n for n in tested_unit_nodes if n['ip'] not in already_allocated]
+            
+            # 若有未被前序端口占用的全新 IP，优先从 fresh 候选池中录取
+            pool_to_select = fresh_candidates if len(fresh_candidates) >= 2 else tested_unit_nodes
+
             unit_selected = []
-            if len(tested_unit_nodes) == 1:
-                single_node = tested_unit_nodes[0]
-                single_node['pick_reason'] = "唯一达标优胜"
-                unit_selected.append(single_node)
+            if len(pool_to_select) == 1:
+                best_node = pool_to_select[0]
+                best_node['pick_reason'] = "独立达标优胜"
+                unit_selected.append(best_node)
+                # 尝试从全部达标节点中补充第 2 个不同 IP 节点
+                backup_candidates = [n for n in tested_unit_nodes if n['ip'] != best_node['ip']]
+                if backup_candidates:
+                    second_node = min(backup_candidates, key=lambda x: x['latency'])
+                    second_node['pick_reason'] = "超低延迟先锋(补充)"
+                    unit_selected.append(second_node)
             else:
                 # 第 1 名：绝对速度最高者 (谁速度更快谁当主力)
-                best_speed_node = max(tested_unit_nodes, key=lambda x: x['speed'])
-                remaining = [n for n in tested_unit_nodes if n['ip'] != best_speed_node['ip']]
+                best_speed_node = max(pool_to_select, key=lambda x: x['speed'])
+                remaining = [n for n in pool_to_select if n['ip'] != best_speed_node['ip']]
                 
                 if remaining:
                     # 第 2 名：在剩余达标节点中选延迟最低者 (超低延迟先锋)
@@ -898,6 +911,9 @@ def speed_test_regions_ports(region_ips: Dict[str, List[Dict]], target_ports: Li
                 else:
                     best_speed_node['pick_reason'] = "综合性能最佳"
                     unit_selected = [best_speed_node]
+
+            for pick in unit_selected:
+                allocated_ips_by_region[region].add(pick['ip'])
 
             # 阶段 4：识别被更优新节点淘汰替换的原在岗节点，移入 backup 备份库
             selected_ips = {p['ip'] for p in unit_selected}
@@ -1040,6 +1056,67 @@ def rotate_and_save_nodes(
             pass
 
     return output_path, backup_path, main_path
+
+def save_download_nodes(
+    qualified_nodes: List[Dict],
+    base_dir: Optional[str] = None,
+    output_file: str = "overNode_download.txt"
+) -> str:
+    """
+    筛选出来的速度最快、延迟最低的 CF 优选节点单独写入作为下载节点 (每个端口留 2 个最优 IP)
+    纯直连 Cloudflare 节点，零中继损耗，专供网盘下载与大流量场景。
+    """
+    if base_dir is None:
+        base_dir = get_project_root()
+    os.makedirs(base_dir, exist_ok=True)
+
+    # 按端口分组
+    nodes_by_port = {}
+    for n in qualified_nodes:
+        p = n['port']
+        if p not in nodes_by_port:
+            nodes_by_port[p] = []
+        nodes_by_port[p].append(n)
+
+    download_lines = []
+    # 按照端口升序处理
+    for port in sorted(nodes_by_port.keys()):
+        p_nodes = nodes_by_port[port]
+        # 每端口选取 2 个最优节点：速度最高 1 个 + 延迟最低 1 个
+        if len(p_nodes) <= 2:
+            selected = p_nodes
+        else:
+            best_speed = max(p_nodes, key=lambda x: x['speed'])
+            remaining = [n for n in p_nodes if n['ip'] != best_speed['ip']]
+            if remaining:
+                best_lat = min(remaining, key=lambda x: x['latency'])
+                selected = [best_speed, best_lat]
+            else:
+                selected = [best_speed]
+
+        for rank, item in enumerate(selected, 1):
+            ip = item['ip']
+            c = item.get('country', 'US')
+            speed = item.get('speed', 0.0)
+            line = f"{ip}:{port}#{c}-下载-[{rank:02d}]:{port}"
+            download_lines.append(line)
+
+    content = "\n".join(download_lines) + "\n"
+    out_path = os.path.join(base_dir, output_file)
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+    # 当前运行目录副本同步 (若当前工作目录与仓库根不同)
+    curr_dir = os.path.abspath(".")
+    if curr_dir != os.path.abspath(base_dir):
+        try:
+            with open(os.path.join(curr_dir, output_file), "w", encoding="utf-8") as f:
+                f.write(content)
+        except Exception:
+            pass
+
+    print(f"\n[+] 🎯 成功生成下载专用优选直连节点: {out_path} (共 {len(download_lines)} 个端口节点)")
+    return out_path
 
 def write_execution_log(status: str, message: str, repo_root: Optional[str] = None):
     """持久化记录一键自动测速与推送的结构化日志"""
@@ -1606,6 +1683,8 @@ def parse_args():
                         help="节点备注名称中间标识 (默认: ICOS，生成形如 DE-ICOS-8443)")
     parser.add_argument("--output", type=str, default=None,
                         help="主订阅输出文件名 (默认: 本地为 overNode.txt，Actions环境下默认为 overNode_actions.txt)")
+    parser.add_argument("--download-output", type=str, default=None,
+                        help="下载专用优选节点输出文件名 (每端口独立保留速度最高+延迟最低 IP，默认: overNode_download.txt)")
     parser.add_argument("--existing-file", "-e", type=str, default=None,
                         help="历史在岗优选节点文件，用于优先复检保活 (默认自动检测已有输出文件)")
     parser.add_argument("--backup-file", type=str, default=None,
@@ -1783,10 +1862,21 @@ def main():
         print(f"[*] 主节点库更新: {os.path.abspath(main_file)}")
     print("=" * 55)
 
-    # 第四阶段：Git 自动推送 (仅推送本次隔离指定的产物，绝对不触碰未关联文件)
+    # 第四阶段：保存下载专用优选直连节点
+    download_output = args.download_output if args.download_output else "overNode_download.txt"
+    if download_output:
+        save_download_nodes(
+            qualified_nodes,
+            base_dir=project_root,
+            output_file=download_output
+        )
+
+    # 第五阶段：Git 自动推送 (仅推送本次隔离指定的产物，绝对不触碰未关联文件)
     files_to_push = [output_file]
     if backup_file:
         files_to_push.append(backup_file)
+    if download_output:
+        files_to_push.append(download_output)
     if output_file == "overNode.txt":
         files_to_push.append(MAIN_FILE)
 
