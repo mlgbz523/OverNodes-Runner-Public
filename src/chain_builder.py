@@ -266,7 +266,7 @@ def assemble_chains(
             ip = host["ip"]
             rank = host["rank"]
             for port in host["ports"]:
-                tag = f"{flag} {region} 直连-{rank:02d} ({port})"
+                tag = f"{flag} 优选{region.lower()}{rank:02d}:{port}"
                 direct_lines.append(f"{ip}:{port}#{tag}")
         region_count = sum(len(h["ports"]) for h in hosts)
         print(f"  + {flag} {region}: {len(hosts)} 台主机 × 共 {region_count} 个端口节点")
@@ -308,17 +308,15 @@ def assemble_chains(
 
         for socks_rank, proxy in enumerate(proxies, 1):
             socks5_uri = f"socks5://{proxy['entry']}"
-            # 获取 ISP/机房标签，若无则使用 S5
-            # 注意：新版的 socks5_scanner.py 生成格式如: 107.150.41.226:18080#US-QUADRANET-[socks5]
-            # 我们在 parse 时可以将其解析出来。先尝试在 proxy.get("tag") 或者用 proxy["entry"] 判断
+            letter = chr(96 + socks_rank) if 1 <= socks_rank <= 26 else str(socks_rank)
             
-            # 使用中继 IP 的第1台主机，仅使用 443 端口进行装配（去重精简）
-            for host in relay_hosts[:1]:
+            # 使用中继 IP 的所有主机进行装配，实现多组匹配
+            for host in relay_hosts:
                 ip = host["ip"]
                 port = 443 if 443 in chain_ports else chain_ports[0]
+                cf_rank = host["rank"]
                 
-                isp = proxy.get("isp", "S5")
-                tag = f"{flag} {country} 链式-{isp}-{socks_rank:02d}"
+                tag = f"{flag} S5_{letter}{prefer_region.lower()}{cf_rank:02d}"
                 chain_entry = f"{ip}:{port}#{tag}${socks5_uri}"
                 chain_lines.append(chain_entry)
                 country_chain_count += 1
