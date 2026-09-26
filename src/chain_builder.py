@@ -39,8 +39,8 @@ if sys.platform.startswith('win'):
     except Exception:
         pass
 
-# 常用标准 Cloudflare 端口矩阵
-DEFAULT_PORTS = [443, 2053, 2083, 2087, 2096, 8443]
+# 常用标准 Cloudflare 黄金端口矩阵 (仅保留国内穿透率最高、QoS优先级最高的 443 与 8443)
+DEFAULT_PORTS = [443, 8443]
 
 # 国旗 Emoji 映射
 FLAG_MAP = {
@@ -362,7 +362,7 @@ def verify_and_rank_chains(
             cf_latency = (time.perf_counter() - t0) * 1000.0
             s.close()
 
-            # 2. 测定 SOCKS5 延迟 (含缓存，避免高频并发击垮目标)
+            # 2. 测定 SOCKS5 真实出网能力 (执行端到端 CONNECT 到 Google，绝不使用 CF 自家域名)
             s5_uri = s5_part.strip()
             if s5_uri not in s5_cache:
                 s5_host_port = s5_uri
@@ -379,7 +379,22 @@ def verify_and_rank_chains(
                 s2.connect((s5_h, s5_p))
                 s2.sendall(b"\x05\x01\x00")
                 resp = s2.recv(2)
-                s5_latency = (time.perf_counter() - t1) * 1000.0 if (resp and resp[0] == 5) else 9999.0
+                if not resp or resp[0] != 5 or resp[1] != 0:
+                    s2.close()
+                    s5_cache[s5_uri] = 9999.0
+                    return None
+
+                # 发起 SOCKS5 CONNECT 请求连接真实第三方目标 www.google.com:443
+                target_b = b"www.google.com"
+                cmd = b"\x05\x01\x00\x03" + bytes([len(target_b)]) + target_b + (443).to_bytes(2, "big")
+                s2.sendall(cmd)
+                rep = s2.recv(4)
+                if not rep or rep[1] != 0:
+                    s2.close()
+                    s5_cache[s5_uri] = 9999.0
+                    return None
+
+                s5_latency = (time.perf_counter() - t1) * 1000.0
                 s2.close()
                 s5_cache[s5_uri] = s5_latency
             else:
@@ -423,7 +438,7 @@ def main():
     parser.add_argument("--socks5", "-s", default="socks5.txt", help="出站 SOCKS5 代理文件")
     parser.add_argument("--output", "-o", default="overNode_chain.txt", help="输出链式订阅文件")
     parser.add_argument("--backup", "-b", default="overNode_chain_backup.txt", help="链式订阅软备份文件")
-    parser.add_argument("--chain-ports", default="2096,8443,2053,443", help="链式节点使用的端口列表 (逗号分隔，默认 2096,8443,2053,443)")
+    parser.add_argument("--chain-ports", default="443,8443", help="链式节点使用的端口列表 (默认仅使用黄金高可用端口 443,8443)")
     parser.add_argument("--allowed-countries", default="US,SG,HK", help="仅允许这些落地国的 SOCKS5 组装链式节点 (逗号分隔，默认 US,SG,HK)")
     parser.add_argument("--inbound-regions", default="SG,US", help="仅保留这些地区的入站直连节点 (逗号分隔，默认 SG,US)")
     parser.add_argument("--verify", action="store_true", help="启用链式节点聚合验证与延迟优选排序")
