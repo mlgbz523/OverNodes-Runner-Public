@@ -54,39 +54,15 @@ jobs:
             --force \
             --no-push
 
-      - name: 执行 SOCKS5 高可用机房节点洗练与测速 (激活 Worker 云端全链路真机探针)
-        env:
-          PROBE_DOMAIN: ${{ secrets.PROBE_DOMAIN }}
+      - name: 固化高可用黄金 SOCKS5 机房节点 (107.150.41.226)
         run: |
-          if [ -z "$PROBE_DOMAIN" ]; then
-            echo "::warning::未配置 PROBE_DOMAIN，将回退至本地探针。"
-            WORKER_ARG=""
-          else
-            WORKER_ARG="--worker-checker https://$PROBE_DOMAIN/admin/check"
-          fi
-
-          python src/socks5_scanner.py \
-            --existing-file public_repo/socks5.txt \
-            --output socks5.txt \
-            --count 6 \
-            --min-speed 0.1 \
-            --timeout 4.0 \
-            --concurrency 60 \
-            --allowed-countries US,SG,HK \
-            --cf-ips overNode_actions.txt \
-            $WORKER_ARG
-
-          # 熔断防御机制：若本次洗练未产出节点或异常，自动注入保底黄金节点
-          if [ ! -s socks5.txt ]; then
-            echo "[!] 警告：本次未能洗练出新节点，自动激活熔断防护，恢复黄金机房节点..."
-            echo "107.150.41.226:18080#US-[socks5]" > socks5.txt
-          fi
+          echo "107.150.41.226:18080#US-[socks5]" > socks5.txt
           cp socks5.txt socks5_backup.txt
 
       - name: 执行链式订阅装配合成 (新加坡/美国优选入站 + 专属美国S5)
         run: |
           python src/chain_builder.py \
-            --inbound overNode_actions.txt,public_repo/overNode.txt \
+            --inbound overNode_actions.txt,docs/ips_cfOverScan.txt \
             --socks5 socks5.txt \
             --output overNode_chain.txt \
             --backup overNode_chain_backup.txt \

@@ -55,19 +55,21 @@ def get_flag(cc: str) -> str:
     return FLAG_MAP.get(cc.upper(), "🌐")
 
 
-def test_ip_latency(ip: str, port: int = 443, timeout: float = 1.2) -> float:
+def test_ip_latency(ip: str, port: int = 2096, timeout: float = 1.2) -> float:
     """快速探测主机连通性与 TCP 握手延迟 (ms)，若超时返回 9999.0"""
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(timeout)
-    start = time.perf_counter()
-    try:
-        s.connect((ip, port))
-        lat = (time.perf_counter() - start) * 1000.0
-        return lat
-    except Exception:
-        return 9999.0
-    finally:
-        s.close()
+    for p in [port, 443]:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        start = time.perf_counter()
+        try:
+            s.connect((ip, p))
+            lat = (time.perf_counter() - start) * 1000.0
+            return lat
+        except Exception:
+            pass
+        finally:
+            s.close()
+    return 9999.0
 
 
 def parse_actions_inbound(filepath: str, inbound_regions: Optional[List[str]] = None) -> Dict[str, List[Dict]]:
@@ -282,23 +284,17 @@ def assemble_chains(
         print("  [!] 无可用 SOCKS5 代理，跳过链式装配")
         return direct_lines, chain_lines
 
-    # 选取用于链式中继的 CF 入站 IP（优先使用 US 区域，回退到任意可用区域）
-    relay_hosts = []
-    for prefer_region in ["US", "SG", "DE"]:
-        if prefer_region in by_region and by_region[prefer_region]:
-            relay_hosts = by_region[prefer_region]
-            print(f"  [*] 链式中继入站 IP 池: 使用 {prefer_region} 区 ({len(relay_hosts)} 台主机)")
-            break
+    # 选取用于链式中继的 CF 入站 IP 池（支持 US 和 SG 双轨入站中继，实现多轨交叉保障）
+    relay_regions = [r for r in ["US", "SG"] if r in by_region and by_region[r]]
+    if not relay_regions and by_region:
+        relay_regions = [list(by_region.keys())[0]]
 
-    if not relay_hosts:
-        # 使用任意第一个区域
-        first_region = list(by_region.keys())[0] if by_region else None
-        if first_region:
-            relay_hosts = by_region[first_region]
-            print(f"  [*] 链式中继入站 IP 池: 回退使用 {first_region} 区")
-        else:
-            print("  [!] 无可用 CF 入站 IP，跳过链式装配")
-            return direct_lines, chain_lines
+    if not relay_regions:
+        print("  [!] 无可用 CF 入站 IP，跳过链式装配")
+        return direct_lines, chain_lines
+
+    for r in relay_regions:
+        print(f"  [*] 链式中继入站 IP 池: 载入 {r} 区 ({len(by_region[r])} 台主机)")
 
     # 为每个 SOCKS5 落地国组装链式节点 (多主机 × 多高可用端口多组匹配)
     for country in sorted(socks5_by_country.keys()):
@@ -310,17 +306,19 @@ def assemble_chains(
             socks5_uri = f"socks5://{proxy['entry']}"
             letter = chr(96 + socks_rank) if 1 <= socks_rank <= 26 else str(socks_rank)
             
-            # 使用中继 IP 的所有主机与端口进行装配，实现多组交叉匹配
-            for host in relay_hosts:
-                ip = host["ip"]
-                cf_rank = host["rank"]
-                
-                # 优先使用 chain_ports 列表中指定的端口
-                for port in chain_ports:
-                    tag = f"{flag} S5_{letter}{prefer_region.lower()[:2]}{cf_rank:02d}:{port}"
-                    chain_entry = f"{ip}:{port}#{tag}${socks5_uri}"
-                    chain_lines.append(chain_entry)
-                    country_chain_count += 1
+            # 使用全部可用中继地区的主机与端口进行装配，实现多轨交叉匹配
+            for reg in relay_regions:
+                hosts = by_region[reg]
+                for host in hosts:
+                    ip = host["ip"]
+                    cf_rank = host["rank"]
+                    
+                    # 优先使用 chain_ports 列表中指定的端口
+                    for port in chain_ports:
+                        tag = f"{flag} S5_{letter}{reg.lower()[:2]}{cf_rank:02d}:{port}"
+                        chain_entry = f"{ip}:{port}#{tag}${socks5_uri}"
+                        chain_lines.append(chain_entry)
+                        country_chain_count += 1
 
         print(f"  + {flag} {country}: {len(proxies)} 个 SOCKS5 × 装配 {country_chain_count} 个链式节点")
 
