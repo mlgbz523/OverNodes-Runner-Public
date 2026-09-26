@@ -54,8 +54,17 @@ jobs:
             --force \
             --no-push
 
-      - name: 执行 SOCKS5 高可用机房节点洗练与测速 (在岗优先复检 + ASN反推提纯)
+      - name: 执行 SOCKS5 高可用机房节点洗练与测速 (激活 Worker 云端全链路真机探针)
+        env:
+          PROBE_DOMAIN: ${{ secrets.PROBE_DOMAIN }}
         run: |
+          if [ -z "$PROBE_DOMAIN" ]; then
+            echo "::warning::未配置 PROBE_DOMAIN，将回退至本地探针。"
+            WORKER_ARG=""
+          else
+            WORKER_ARG="--worker-checker https://$PROBE_DOMAIN/admin/check"
+          fi
+
           python src/socks5_scanner.py \
             --existing-file public_repo/socks5.txt \
             --output socks5.txt \
@@ -63,7 +72,8 @@ jobs:
             --min-speed 0.1 \
             --timeout 4.0 \
             --concurrency 60 \
-            --allowed-countries US,SG,HK
+            --allowed-countries US,SG,HK \
+            $WORKER_ARG
 
           # 熔断防御机制：若本次洗练未产出节点或异常，自动注入保底黄金节点
           if [ ! -s socks5.txt ]; then
