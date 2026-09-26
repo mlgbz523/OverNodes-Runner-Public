@@ -114,7 +114,8 @@ class Socks5Scanner:
         existing_file: Optional[str] = None,
         min_speed_mb: float = 0.5,
         worker_checker: Optional[str] = None,
-        benchmark_max: bool = False
+        benchmark_max: bool = False,
+        allowed_countries: Optional[List[str]] = None
     ):
         self.target_count = target_count
         self.timeout = timeout
@@ -123,6 +124,7 @@ class Socks5Scanner:
         self.min_speed_mb = min_speed_mb
         self.worker_checker = worker_checker or os.getenv("WORKER_CHECKER", "").strip()
         self.benchmark_max = benchmark_max
+        self.allowed_countries = [c.strip().upper() for c in (allowed_countries or ["US", "SG", "HK"]) if c.strip()]
         self.executor = ThreadPoolExecutor(max_workers=min(self.concurrency, 64))
 
     def load_existing_nodes(self, filepath: str) -> List[Dict]:
@@ -498,11 +500,14 @@ class Socks5Scanner:
 
                 for r in results:
                     if r is not None:
+                        # 落地国白名单检查：非允许国家直接剔除不予留任
+                        if self.allowed_countries and r["country"] not in self.allowed_countries:
+                            continue
                         # 只要有响应且带宽超过基础底线就予以留任
                         if r["speed_mb"] >= self.min_speed_mb or r["speed_mb"] > 0.15:
                             survived_nodes.append(r)
 
-                print(f"[+] 【复检结果】原在岗 {len(existing_list)} 个，达标留任: {len(survived_nodes)} 个，下线剔除: {len(existing_list) - len(survived_nodes)} 个", flush=True)
+                print(f"[+] 【复检结果】原在岗 {len(existing_list)} 个，达标留任: {len(survived_nodes)} 个，下线/非白名单剔除: {len(existing_list) - len(survived_nodes)} 个", flush=True)
 
         survived_nodes.sort(key=lambda x: (-x["peak_mb"], -x["speed_mb"], x["latency"]))
 
@@ -514,30 +519,35 @@ class Socks5Scanner:
             print(f"[+] 【零漂移保活】存量节点完备且性能达标 (主力峰值: {survived_nodes[0]['peak_mbps']} Mbps)，保持现状！", flush=True)
             return survived_nodes[:self.target_count]
 
-        print(f"[*] 【增量扩充】正在拉取全球优质候选池，并发筛选高吞吐大带宽节点 (目标缺口: {max(needed_count, 1)} 个)...", flush=True)
+        print(f"[*] 【增量扩充】正在拉取全球优质候选池，并发筛选高吞吐大带宽节点 (白名单限制: {','.join(self.allowed_countries)} | 目标缺口: {max(needed_count, 1)} 个)...", flush=True)
         candidates = self.fetch_candidates(exclude_keys=existing_keys)
         if not candidates:
             print("[!] 未抓取到新候选代理，返回现有可用节点", flush=True)
             return survived_nodes
 
-        # 优先将优质区域排在前面
-        preferred = [c for c in candidates if c["country"] in PREFERRED_REGIONS]
-        others = [c for c in candidates if c["country"] not in PREFERRED_REGIONS]
+        # 优先将允许落地国的候选排在最前面
+        preferred = [c for c in candidates if c["country"] in self.allowed_countries]
+        others = [c for c in candidates if c["country"] not in self.allowed_countries]
 
-        probe_limit = min(len(candidates), max(90, needed_count * 30))
-        half = probe_limit // 2
-        test_pool = preferred[:half] + others[:(probe_limit - len(preferred[:half]))]
+        probe_limit = min(len(candidates), max(100, needed_count * 35))
+        # 优先探测目标国家候选，剩余名额探测未知国家以防源头未标注
+        test_pool = preferred[:probe_limit]
+        if len(test_pool) < probe_limit:
+            test_pool += others[:(probe_limit - len(test_pool))]
 
         print(f"[*] 精选 {len(test_pool)} 个公网候选执行深度验真与极限测速 (并发: {self.concurrency})...", flush=True)
         sem = asyncio.Semaphore(self.concurrency)
         tasks = [self.probe_candidate(c, sem) for c in test_pool]
         results = await asyncio.gather(*tasks)
 
-        valid_replacements = [r for r in results if r is not None and r["speed_mb"] > 0.1]
-        print(f"[*] 探测完毕！候选池产出 {len(valid_replacements)} 个测出真实下行吞吐量的活体节点", flush=True)
+        valid_replacements = [
+            r for r in results 
+            if r is not None and r["speed_mb"] > 0.1 and (not self.allowed_countries or r["country"] in self.allowed_countries)
+        ]
+        print(f"[*] 探测完毕！候选池产出 {len(valid_replacements)} 个符合白名单 ({','.join(self.allowed_countries)}) 的活体节点", flush=True)
 
-        # 阶段三：多国均衡与按吞吐量定拔
-        all_pool = survived_nodes + valid_replacements
+        # 阶段三：多国均衡与按吞吐量定拔 (严格过滤白名单)
+        all_pool = [n for n in (survived_nodes + valid_replacements) if (not self.allowed_countries or n["country"] in self.allowed_countries)]
         all_pool.sort(key=lambda x: (-x["peak_mb"], -x["speed_mb"], x["latency"]))
 
         # 按国家聚类分组
@@ -548,10 +558,13 @@ class Socks5Scanner:
                 country_buckets[c] = []
             country_buckets[c].append(n)
 
-        # 轮询从每个国家抽取最优节点，保障多国落地均衡
+        # 轮询从白名单国家抽取最优节点，保障允许国家均衡
         selected = []
         seen = set()
-        bucket_order = ["HK", "SG", "JP", "US", "DE"] + [k for k in country_buckets.keys() if k not in ["HK", "SG", "JP", "US", "DE"]]
+        bucket_order = [c for c in self.allowed_countries if c in country_buckets]
+        for k in country_buckets.keys():
+            if k not in bucket_order:
+                bucket_order.append(k)
 
         for round_idx in range(3):
             for c in bucket_order:
@@ -566,7 +579,7 @@ class Socks5Scanner:
             if len(selected) >= self.target_count:
                 break
 
-        # 若未填满，用剩余吞吐量最高的补齐
+        # 若未填满，用剩余吞吐量最高的补齐 (依然限定白名单)
         for n in all_pool:
             if len(selected) >= self.target_count:
                 break
@@ -611,6 +624,7 @@ def main():
     parser.add_argument("--worker-checker", "-w", default=None, help="edgetunnel云端探针端点(如 https://your-worker.xyz/admin/check)")
     parser.add_argument("--benchmark-max", "-b", action="store_true", help="开启最大吞吐量极限满载压测 (拉取50MB数据流测峰值带宽)")
     parser.add_argument("--test-node", "-t", default=None, help="单节点秒测模式 (例如: 107.167.18.122:443 或 45.32.160.61:1088)")
+    parser.add_argument("--allowed-countries", default="US,SG,HK", help="允许保留的 SOCKS5 落地国列表 (逗号分隔，默认 US,SG,HK)")
     args = parser.parse_args()
 
     # 1. 单节点即时秒测模式
@@ -634,6 +648,8 @@ def main():
     if not existing_file and os.path.exists(args.output):
         existing_file = args.output
 
+    allowed_countries = [c.strip().upper() for c in args.allowed_countries.split(",") if c.strip()]
+
     scanner = Socks5Scanner(
         target_count=args.count,
         timeout=args.timeout,
@@ -641,7 +657,8 @@ def main():
         existing_file=existing_file,
         min_speed_mb=args.min_speed,
         worker_checker=args.worker_checker,
-        benchmark_max=args.benchmark_max
+        benchmark_max=args.benchmark_max,
+        allowed_countries=allowed_countries
     )
 
     t0 = time.time()

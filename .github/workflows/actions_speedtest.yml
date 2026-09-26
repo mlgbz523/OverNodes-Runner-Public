@@ -61,7 +61,8 @@ jobs:
             --output socks5.txt \
             --count 6 \
             --concurrency 80 \
-            --min-speed 0.8
+            --min-speed 0.2 \
+            --allowed-countries US,SG,HK
 
       - name: 执行链式订阅装配合成 (全量入站融合 + 单一王者代理统一定锚)
         run: |
@@ -69,7 +70,8 @@ jobs:
             --inbound overNode_actions.txt,public_repo/overNode.txt \
             --socks5 socks5.txt \
             --output overNode_chain.txt \
-            --backup overNode_chain_backup.txt
+            --backup overNode_chain_backup.txt \
+            --allowed-countries US,SG,HK
 
       - name: 跨仓库推送到公开分发仓库
         run: |

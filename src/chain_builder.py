@@ -163,11 +163,12 @@ def parse_actions_inbound(filepath: str) -> Dict[str, List[Dict]]:
     return by_region
 
 
-def parse_socks5_file(filepath: str) -> Dict[str, List[Dict]]:
+def parse_socks5_file(filepath: str, allowed_countries: Optional[List[str]] = None) -> Dict[str, List[Dict]]:
     """
-    解析 socks5.txt 中所有代理节点，按落地国家分组。
+    解析 socks5.txt 中所有代理节点，按落地国家分组 (仅保留允许的国家)。
     返回: {country_code: [{host, port, username, password, entry}, ...]}
     """
+    allowed_set = set(c.strip().upper() for c in allowed_countries) if allowed_countries else None
     target_path = filepath
     if not os.path.exists(target_path):
         if os.path.exists(os.path.basename(target_path)):
@@ -188,7 +189,11 @@ def parse_socks5_file(filepath: str) -> Dict[str, List[Dict]]:
 
             # 提取国家代码
             country_match = re.match(r"^([A-Z]{2})", tag)
-            country = country_match.group(1) if country_match else "UN"
+            country = country_match.group(1).upper() if country_match else "UN"
+
+            # 严格国家白名单过滤
+            if allowed_set and country not in allowed_set:
+                continue
 
             # 解析 host:port (支持 user:pass@host:port)
             auth = ""
@@ -317,14 +322,17 @@ def main():
     parser.add_argument("--output", "-o", default="overNode_chain.txt", help="输出链式订阅文件")
     parser.add_argument("--backup", "-b", default="overNode_chain_backup.txt", help="链式订阅软备份文件")
     parser.add_argument("--chain-ports", default="443,2053,8443", help="链式节点使用的端口列表 (逗号分隔，默认 443,2053,8443)")
+    parser.add_argument("--allowed-countries", default="US,SG,HK", help="仅允许这些落地国的 SOCKS5 组装链式节点 (逗号分隔，默认 US,SG,HK)")
     args = parser.parse_args()
 
     chain_ports = [int(p.strip()) for p in args.chain_ports.split(",") if p.strip()]
+    allowed_countries = [c.strip().upper() for c in args.allowed_countries.split(",") if c.strip()]
 
     print("=" * 60)
     print("  OverNode 多国 SOCKS5 落地 × CF 直连双轨装配引擎")
     print(f"  入站节点文件: {args.inbound}")
     print(f"  出站代理文件: {args.socks5}")
+    print(f"  落地国白名单: {allowed_countries}")
     print(f"  链式端口矩阵: {chain_ports}")
     print(f"  目标输出订阅: {args.output}")
     print("=" * 60)
@@ -335,8 +343,8 @@ def main():
         print("[!] 错误：未读取到有效的入站节点！")
         return
 
-    # 2. 解析 SOCKS5 出站代理（按落地国分组）
-    socks5_by_country = parse_socks5_file(args.socks5)
+    # 2. 解析 SOCKS5 出站代理（按落地国分组，仅保留白名单国家）
+    socks5_by_country = parse_socks5_file(args.socks5, allowed_countries=allowed_countries)
 
     # 3. 双轨装配
     direct_lines, chain_lines = assemble_chains(by_region, socks5_by_country, chain_ports)
