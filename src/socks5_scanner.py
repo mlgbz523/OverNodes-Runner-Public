@@ -126,6 +126,7 @@ class Socks5Scanner:
         self.benchmark_max = benchmark_max
         self.allowed_countries = [c.strip().upper() for c in (allowed_countries or ["US", "SG", "HK"]) if c.strip()]
         self.executor = ThreadPoolExecutor(max_workers=min(self.concurrency, 64))
+        self.cf_ip = None
 
     def load_existing_nodes(self, filepath: str) -> List[Dict]:
         """解析已有节点文件，提取在岗 SOCKS5 节点列表"""
@@ -359,10 +360,13 @@ class Socks5Scanner:
             except Exception:
                 pass
 
+    def set_cf_ip(self, cf_ip: str):
+        self.cf_ip = cf_ip
+
     def _sync_worker_probe(self, host: str, port: int, username: str = "", password: str = "") -> Optional[Tuple[float, str, str]]:
         """
         云端探针模式：借助 edgetunnel 的 /admin/check?socks5=... 接口发起海外边缘测活
-        返回: (responseTime, loc, exit_ip)
+        若设置了 cf_ip，则通过底层 SNI 注入强行复用 CF 优选 IP 进行全链路测试！
         """
         if not self.worker_checker:
             return None
@@ -370,20 +374,37 @@ class Socks5Scanner:
             proxy_str = f"{username}:{password}@{host}:{port}" if username and password else f"{host}:{port}"
             encoded_proxy = urllib.parse.quote(proxy_str)
             sep = "&" if "?" in self.worker_checker else "?"
-            check_url = f"{self.worker_checker}{sep}socks5={encoded_proxy}"
+            
+            # 如果有 cf_ip，则通过强行指定 IP 和 SNI 进行真实客户端链路模拟
+            if self.cf_ip and self.worker_checker.startswith("https://"):
+                parsed = urllib.parse.urlparse(self.worker_checker)
+                domain = parsed.netloc
+                path_query = f"{parsed.path}{sep}socks5={encoded_proxy}"
+                import http.client
+                context = ssl.create_default_context()
+                context.check_hostname = False
+                context.verify_mode = ssl.CERT_NONE
+                conn = http.client.HTTPSConnection(self.cf_ip, 443, context=context, timeout=6.0)
+                conn.request("GET", path_query, headers={"Host": domain, "User-Agent": "OverNodes-Runner/Socks5Scanner"})
+                resp = conn.getresponse()
+                raw_data = resp.read().decode("utf-8", errors="ignore")
+                conn.close()
+                data = json.loads(raw_data)
+            else:
+                check_url = f"{self.worker_checker}{sep}socks5={encoded_proxy}"
+                req = urllib.request.Request(
+                    check_url,
+                    headers={"User-Agent": "OverNodes-Runner/Socks5Scanner"}
+                )
+                with urllib.request.urlopen(req, timeout=6.0) as resp:
+                    data = json.loads(resp.read().decode("utf-8", errors="ignore"))
 
-            req = urllib.request.Request(
-                check_url,
-                headers={"User-Agent": "OverNodes-Runner/Socks5Scanner"}
-            )
-            with urllib.request.urlopen(req, timeout=6.0) as resp:
-                data = json.loads(resp.read().decode("utf-8", errors="ignore"))
-                if data.get("success"):
-                    r_time = float(data.get("responseTime", 999))
-                    loc = str(data.get("loc", "AUTO")).upper()
-                    exit_ip = str(data.get("ip", host))
-                    return r_time, loc, exit_ip
-        except Exception:
+            if data.get("success"):
+                r_time = float(data.get("responseTime", 999))
+                loc = str(data.get("loc", "AUTO")).upper()
+                exit_ip = str(data.get("ip", host))
+                return r_time, loc, exit_ip
+        except Exception as e:
             pass
         return None
 
@@ -674,6 +695,7 @@ def main():
     parser.add_argument("--benchmark-max", "-b", action="store_true", help="开启最大吞吐量极限满载压测 (拉取50MB数据流测峰值带宽)")
     parser.add_argument("--test-node", "-t", default=None, help="单节点秒测模式 (例如: 107.167.18.122:443 或 45.32.160.61:1088)")
     parser.add_argument("--allowed-countries", default="US,SG,HK", help="允许保留的 SOCKS5 落地国列表 (逗号分隔，默认 US,SG,HK)")
+    parser.add_argument("--cf-ips", default=None, help="传入 CF 优选 IP 文件路径，用于全链路聚合测试")
     args = parser.parse_args()
 
     # 1. 单节点即时秒测模式
@@ -709,6 +731,20 @@ def main():
         benchmark_max=args.benchmark_max,
         allowed_countries=allowed_countries
     )
+    
+    if args.cf_ips and os.path.exists(args.cf_ips):
+        try:
+            with open(args.cf_ips, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and ":" in line:
+                        # 解析 IP (e.g., 104.18.133.109:443#US[1.43MB/S]-443)
+                        cf_ip = line.split(":")[0].strip()
+                        scanner.set_cf_ip(cf_ip)
+                        print(f"[*] 【全链路聚合测试】已挂载 CF 优选入口 IP: {cf_ip} 作为 SNI 代理跳板！", flush=True)
+                        break
+        except Exception as e:
+            print(f"[!] 读取 CF 优选 IP 失败: {e}", flush=True)
 
     t0 = time.time()
     best_nodes = asyncio.run(scanner.scan())
