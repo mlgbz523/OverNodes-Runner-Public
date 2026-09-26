@@ -1,21 +1,24 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-OverNode Real-Landing Dual-Track Assembler (去伪存真·真物理落地双轨装配引擎)
+OverNode Multi-Country Chain Assembler (多国 SOCKS5 落地 × CF 直连双轨装配引擎)
 
-核心升级：
-1. 【真·物理归属对齐 (True Physical Alignment)】：
-   - 🇸🇬 新加坡节点：全部由 Actions 新加坡优选 IP 承载【官方纯净直出】！
-     数据从 Cloudflare 新加坡机房直接出站，出口 100% 为真实新加坡 IP，彻底消灭跨洋绕路，延迟降至最低(~50ms)！
-   - 🇺🇸 美国节点：由 Actions 美西优选 IP + 美国高速黄金 SOCKS5 承载【链式中继】！
-     美西直达美西，不折返、不绕路，出口为真实纯净美国固定 IP，专供 AI 与特定欧美业务。
-2. 【严格聚焦优质主机 (Top-2 Hosts Only)】：
-   - 每个国家/地区优先提取延迟最低、速度最快的前 2 个主机 (主力 [01]，备用 [02])。
-   - 每一个 IP 的每一个目标端口保留且仅保留 1 个节点，杜绝重复端口与混乱序号。
-3. 【极简短命名规范 (No Truncation)】：
-   - 规范格式：🇺🇸 US-[01]:443、🇺🇸 US-[01]:2053、🇺🇸 US-[02]:443
-   - 直出专线：🇸🇬 SG-[01]:443、🇸🇬 SG-[01]:2053、🇸🇬 SG-[02]:443
-   - 彻底删除臃肿的 [socks5] 长标签与多余的 03 序号，客户端卡片永不截断！
+核心架构：
+1. 【CF 优选直连节点 (CF-Direct)】：
+   - 从 Actions 优选入站文件读取所有地区的低延迟 CF IP，按地区分组。
+   - 命名规范：🇸🇬 SG-直连-[01]:443、🇺🇸 US-直连-[01]:2053、🇩🇪 DE-直连-[01]:443
+   - 纯 Cloudflare 反代直出，出口为 CF 机房所在国，大带宽、低延迟、适合流媒体与下载。
+
+2. 【SOCKS5 链式落地节点 (S5-Chain)】：
+   - 读取 socks5.txt 全部验活代理（多国 US/GB/NL/CH/...），按 SOCKS5 落地国分组。
+   - 每个 SOCKS5 与多个 CF 优选 IP × 多端口组装链式节点。
+   - 命名以 **SOCKS5 落地国** 为准：🇺🇸 US-S5-[01]:443、🇬🇧 GB-S5-[01]:2053
+   - 链式中继确保出口为 SOCKS5 所在国的真实固定 IP，适合 AI/地区锁定业务。
+
+3. 【命名规范】：
+   - 直连节点：{flag} {CC}-直连-[{rank}]:{port}
+   - 链式节点：{flag} {socks5_CC}-S5-[{rank}]:{port}
+   - 其中 CC 为 SOCKS5 落地国家代码，rank 为该国内的 SOCKS5 序号
 """
 
 import os
@@ -24,7 +27,9 @@ import re
 import socket
 import argparse
 import shutil
-from typing import List, Dict, Tuple
+import time
+from typing import List, Dict, Tuple, Optional
+from collections import OrderedDict
 
 # 终端 UTF-8 保障
 if sys.platform.startswith('win'):
@@ -36,12 +41,24 @@ if sys.platform.startswith('win'):
 # 常用标准 Cloudflare 端口矩阵
 DEFAULT_PORTS = [443, 2053, 2083, 2087, 2096, 8443]
 
+# 国旗 Emoji 映射
+FLAG_MAP = {
+    "US": "🇺🇸", "GB": "🇬🇧", "NL": "🇳🇱", "CH": "🇨🇭", "DE": "🇩🇪",
+    "SG": "🇸🇬", "JP": "🇯🇵", "HK": "🇭🇰", "KR": "🇰🇷", "FR": "🇫🇷",
+    "IN": "🇮🇳", "AU": "🇦🇺", "CA": "🇨🇦", "BR": "🇧🇷", "ES": "🇪🇸",
+    "IT": "🇮🇹", "SE": "🇸🇪", "NO": "🇳🇴", "FI": "🇫🇮", "PL": "🇵🇱",
+    "CZ": "🇨🇿", "AT": "🇦🇹", "IE": "🇮🇪", "BE": "🇧🇪", "DK": "🇩🇰",
+    "TW": "🇹🇼", "TH": "🇹🇭", "VN": "🇻🇳", "RU": "🇷🇺", "BG": "🇧🇬",
+}
+
+def get_flag(cc: str) -> str:
+    return FLAG_MAP.get(cc.upper(), "🌐")
+
 
 def test_ip_latency(ip: str, port: int = 443, timeout: float = 1.2) -> float:
     """快速探测主机连通性与 TCP 握手延迟 (ms)，若超时返回 9999.0"""
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(timeout)
-    import time
     start = time.perf_counter()
     try:
         s.connect((ip, port))
@@ -55,8 +72,8 @@ def test_ip_latency(ip: str, port: int = 443, timeout: float = 1.2) -> float:
 
 def parse_actions_inbound(filepath: str) -> Dict[str, List[Dict]]:
     """
-    读取 Actions 优选文件（支持逗号分隔多文件，如 overNode_actions.txt,public_repo/overNode.txt），
-    按 SG 和 US 归类，并按 IP 聚合支持的端口
+    读取 Actions 优选文件（支持逗号分隔多文件），
+    按国家/地区分组归类，每地区保留延迟最低的前 2 个主机
     """
     raw_paths = [p.strip() for p in filepath.split(",") if p.strip()]
     valid_files = []
@@ -72,11 +89,11 @@ def parse_actions_inbound(filepath: str) -> Dict[str, List[Dict]]:
 
     if not valid_files:
         print(f"[!] 错误: 所有指定的入站节点文件均不存在: {filepath}")
-        return {"SG": [], "US": []}
+        return {}
 
-    by_region = {"SG": [], "US": []}
-    ip_order = {"SG": [], "US": []}
-    ip_ports = {"SG": {}, "US": {}}
+    # 按地区归类 IP 与其端口
+    ip_order: Dict[str, List[str]] = {}  # region -> [ip1, ip2, ...]
+    ip_ports: Dict[str, Dict[str, List[int]]] = {}  # region -> {ip: [port1, port2, ...]}
 
     for fpath in valid_files:
         print(f"[*] 正在载入入站优选节点: {fpath}")
@@ -96,36 +113,34 @@ def parse_actions_inbound(filepath: str) -> Dict[str, List[Dict]]:
                     except ValueError:
                         continue
 
-                    region = None
-                    if "SG" in tag or "🇸🇬" in tag:
-                        region = "SG"
-                    elif "US" in tag or "🇺🇸" in tag:
-                        region = "US"
+                    # 从 tag 中提取国家代码 (前两个大写字母)
+                    region_match = re.match(r"^(?:🇸🇬|🇺🇸|🇩🇪|🇬🇧|🇯🇵|🇭🇰|🇰🇷|🇫🇷|🌐)?\s*([A-Z]{2})", tag)
+                    region = region_match.group(1) if region_match else None
 
                     if region:
+                        if region not in ip_order:
+                            ip_order[region] = []
+                            ip_ports[region] = {}
                         if ip not in ip_order[region]:
                             ip_order[region].append(ip)
                             ip_ports[region][ip] = []
                         if port not in ip_ports[region][ip]:
                             ip_ports[region][ip].append(port)
 
-    # 针对每个地区，对 IP 进行健康优选（挑选延迟最低、最快的前 2 台主机）
-    for region in ["SG", "US"]:
+    # 针对每个地区，对 IP 进行健康优选（挑选延迟最低的前 2 台主机）
+    by_region: Dict[str, List[Dict]] = {}
+    for region in sorted(ip_order.keys()):
         candidates = ip_order[region]
         scored_ips = []
         for ip in candidates:
-            # 探测可用性与延迟
             lat = test_ip_latency(ip, 443)
             scored_ips.append((ip, lat))
             print(f"  [{region}] 主机 {ip} 连通探测延迟: {lat:.1f}ms")
 
-        # 排序：健康的在前，延迟低者居前
         scored_ips.sort(key=lambda x: x[1])
 
-        # 选拔出前 2 名健康主机（若前 2 名存在不通的，自动往后选替补）
         healthy_ips = [item[0] for item in scored_ips if item[1] < 9999.0]
         if len(healthy_ips) < 2:
-            # 补齐
             for item in scored_ips:
                 if item[0] not in healthy_ips:
                     healthy_ips.append(item[0])
@@ -133,9 +148,9 @@ def parse_actions_inbound(filepath: str) -> Dict[str, List[Dict]]:
                     break
 
         selected_ips = healthy_ips[:2]
+        by_region[region] = []
 
         for rank, ip in enumerate(selected_ips, 1):
-            # 获取该 IP 支持的端口（若源文件中不足，补齐默认标准端口）
             existing_p = ip_ports[region].get(ip, [])
             all_ports = sorted(list(set(existing_p if existing_p else DEFAULT_PORTS)))
             by_region[region].append({
@@ -148,113 +163,209 @@ def parse_actions_inbound(filepath: str) -> Dict[str, List[Dict]]:
     return by_region
 
 
-def parse_socks5_anchor(filepath: str) -> str:
-    """提取在岗 SOCKS5 中经过测速认证的第一顺位王者代理作为美国链式中继锚点"""
+def parse_socks5_file(filepath: str) -> Dict[str, List[Dict]]:
+    """
+    解析 socks5.txt 中所有代理节点，按落地国家分组。
+    返回: {country_code: [{host, port, username, password, entry}, ...]}
+    """
     target_path = filepath
     if not os.path.exists(target_path):
         if os.path.exists(os.path.basename(target_path)):
             target_path = os.path.basename(target_path)
         else:
             print(f"[!] SOCKS5 代理文件不存在: {filepath}")
-            return ""
+            return {}
 
+    by_country: Dict[str, List[Dict]] = {}
     with open(target_path, "r", encoding="utf-8", errors="ignore") as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
-            entry = line.split("#")[0].strip()
-            if ":" in entry:
-                print(f"[+] 成功锁定美国黄金主力 SOCKS5 出口: {entry}")
-                return entry
+            parts = line.split("#")
+            entry_part = parts[0].strip()
+            tag = parts[1].strip() if len(parts) > 1 else ""
 
-    return ""
+            # 提取国家代码
+            country_match = re.match(r"^([A-Z]{2})", tag)
+            country = country_match.group(1) if country_match else "UN"
+
+            # 解析 host:port (支持 user:pass@host:port)
+            auth = ""
+            host_port = entry_part
+            if entry_part.startswith("socks5://"):
+                entry_part = entry_part[9:]
+            if "@" in entry_part:
+                auth, host_port = entry_part.split("@", 1)
+
+            username, password = "", ""
+            if ":" in auth:
+                username, password = auth.split(":", 1)
+
+            hp_parts = host_port.split(":")
+            host = hp_parts[0].strip()
+            port = int(hp_parts[1].strip()) if len(hp_parts) > 1 else 1080
+
+            proxy_entry = f"{host}:{port}" if not auth else f"{username}:{password}@{host}:{port}"
+
+            if country not in by_country:
+                by_country[country] = []
+            by_country[country].append({
+                "host": host,
+                "port": port,
+                "username": username,
+                "password": password,
+                "entry": proxy_entry
+            })
+
+    for cc, proxies in by_country.items():
+        print(f"[+] SOCKS5 落地国 [{cc}]: {len(proxies)} 个代理节点")
+        for i, p in enumerate(proxies, 1):
+            print(f"    {get_flag(cc)} [{i:02d}] {p['entry']}")
+
+    return by_country
 
 
-def assemble_real_landing_chains(by_region: Dict[str, List[Dict]], anchor_socks5: str) -> List[str]:
+def assemble_chains(
+    by_region: Dict[str, List[Dict]],
+    socks5_by_country: Dict[str, List[Dict]],
+    chain_ports: List[int]
+) -> Tuple[List[str], List[str]]:
     """
-    精简命名与真实落地装配：
-    1. 🇸🇬 新加坡节点 -> 纯净官方直出 (真实新加坡出口，延迟 ~50ms，杜绝跨洋绕路)
-       命名规范：🇸🇬 SG-[01]:443、🇸🇬 SG-[01]:2053 ...
-    2. 🇺🇸 美国节点 -> 美西链式落地 (美西直达美西，真实固定美国出口，专供 AI)
-       命名规范：🇺🇸 US-[01]:443、🇺🇸 US-[01]:2053 ...
-    3. 🇺🇸 直出备用 -> 纯净官方直出备用 (真实美国出口，大带宽直连下载)
-       命名规范：🇺🇸 直连-[01]:443、🇺🇸 直连-[01]:2053
+    双轨装配：
+    1. CF 直连节点：按地区生成纯直连节点
+    2. SOCKS5 链式节点：每个 SOCKS5 落地国 × CF 优选 IP × 端口
+
+    返回: (direct_lines, chain_lines)
     """
+    direct_lines = []
     chain_lines = []
 
-    # 1. 组装真·新加坡落地直出节点 (SG-直连-[01]:端口)
-    sg_hosts = by_region.get("SG", [])
-    for host in sg_hosts:
-        ip = host["ip"]
-        rank = host["rank"]
-        for port in host["ports"]:
-            tag = f"🇸🇬 SG-直连-[{rank:02d}]:{port}"
-            chain_lines.append(f"{ip}:{port}#{tag}")
-    print(f"  + 装配 [🇸🇬 新加坡真落地直出] 节点: {len(sg_hosts)} 台主机共 {sum(len(h['ports']) for h in sg_hosts)} 个端口")
+    # === 轨道一：CF 优选直连节点 ===
+    print(f"\n{'='*60}")
+    print(f"  [轨道一] CF 优选直连节点装配")
+    print(f"{'='*60}")
 
-    # 2. 组装真·美国落地链式中继节点 (US-S5-[01]:端口，修复末尾多余横杠)
-    us_hosts = by_region.get("US", [])
-    for host in us_hosts:
-        ip = host["ip"]
-        rank = host["rank"]
-        for port in host["ports"]:
-            tag = f"🇺🇸 US-S5-[{rank:02d}]:{port}"
-            if anchor_socks5:
-                chain_entry = f"{ip}:{port}#{tag}$socks5://{anchor_socks5}"
-            else:
-                chain_entry = f"{ip}:{port}#{tag}"
-            chain_lines.append(chain_entry)
-    print(f"  + 装配 [🇺🇸 美国真落地链式(S5)] 节点: {len(us_hosts)} 台主机共 {sum(len(h['ports']) for h in us_hosts)} 个端口")
+    for region in sorted(by_region.keys()):
+        hosts = by_region[region]
+        flag = get_flag(region)
+        for host in hosts:
+            ip = host["ip"]
+            rank = host["rank"]
+            for port in host["ports"]:
+                tag = f"{flag} {region}-直连-[{rank:02d}]:{port}"
+                direct_lines.append(f"{ip}:{port}#{tag}")
+        region_count = sum(len(h["ports"]) for h in hosts)
+        print(f"  + {flag} {region}: {len(hosts)} 台主机 × 共 {region_count} 个端口节点")
 
-    # 3. 补充 2 个美区官方纯净直连备用节点 (US-直连-[01]:端口)
-    if us_hosts:
-        primary_us = us_hosts[0]
-        ip = primary_us["ip"]
-        for port in [443, 2053]:
-            tag = f"🇺🇸 US-直连-[01]:{port}"
-            chain_lines.append(f"{ip}:{port}#{tag}")
-        print(f"  + 补充 [🇺🇸 美国直连备用] 节点: 2 个")
+    print(f"  >> 直连节点总计: {len(direct_lines)} 个")
 
-    print(f"[*] 真实物理落地节点矩阵装配完毕，总计: {len(chain_lines)} 个纯净节点")
-    return chain_lines
+    # === 轨道二：SOCKS5 链式落地节点 ===
+    print(f"\n{'='*60}")
+    print(f"  [轨道二] SOCKS5 链式落地节点装配")
+    print(f"{'='*60}")
+
+    if not socks5_by_country:
+        print("  [!] 无可用 SOCKS5 代理，跳过链式装配")
+        return direct_lines, chain_lines
+
+    # 选取用于链式中继的 CF 入站 IP（优先使用 US 区域，回退到任意可用区域）
+    relay_hosts = []
+    for prefer_region in ["US", "SG", "DE"]:
+        if prefer_region in by_region and by_region[prefer_region]:
+            relay_hosts = by_region[prefer_region]
+            print(f"  [*] 链式中继入站 IP 池: 使用 {prefer_region} 区 ({len(relay_hosts)} 台主机)")
+            break
+
+    if not relay_hosts:
+        # 使用任意第一个区域
+        first_region = list(by_region.keys())[0] if by_region else None
+        if first_region:
+            relay_hosts = by_region[first_region]
+            print(f"  [*] 链式中继入站 IP 池: 回退使用 {first_region} 区")
+        else:
+            print("  [!] 无可用 CF 入站 IP，跳过链式装配")
+            return direct_lines, chain_lines
+
+    # 为每个 SOCKS5 落地国组装链式节点
+    for country in sorted(socks5_by_country.keys()):
+        proxies = socks5_by_country[country]
+        flag = get_flag(country)
+        country_chain_count = 0
+
+        for socks_rank, proxy in enumerate(proxies, 1):
+            socks5_uri = f"socks5://{proxy['entry']}"
+            # 使用中继 IP 的前1台主机（控制节点数量），搭配精简端口
+            for host in relay_hosts[:1]:
+                ip = host["ip"]
+                for port in chain_ports:
+                    tag = f"{flag} {country}-S5-[{socks_rank:02d}]:{port}"
+                    chain_entry = f"{ip}:{port}#{tag}${socks5_uri}"
+                    chain_lines.append(chain_entry)
+                    country_chain_count += 1
+
+        print(f"  + {flag} {country}: {len(proxies)} 个 SOCKS5 × 装配 {country_chain_count} 个链式节点")
+
+    print(f"  >> 链式节点总计: {len(chain_lines)} 个")
+    return direct_lines, chain_lines
 
 
 def main():
-    parser = argparse.ArgumentParser(description="OverNode Real-Landing Dual-Track Assembler")
-    parser.add_argument("--inbound", "-i", default="overNode_actions.txt", help="入站优选节点文件")
+    parser = argparse.ArgumentParser(description="OverNode Multi-Country Chain Assembler")
+    parser.add_argument("--inbound", "-i", default="overNode_actions.txt", help="入站优选节点文件 (逗号分隔多文件)")
     parser.add_argument("--socks5", "-s", default="socks5.txt", help="出站 SOCKS5 代理文件")
     parser.add_argument("--output", "-o", default="overNode_chain.txt", help="输出链式订阅文件")
     parser.add_argument("--backup", "-b", default="overNode_chain_backup.txt", help="链式订阅软备份文件")
+    parser.add_argument("--chain-ports", default="443,2053,8443", help="链式节点使用的端口列表 (逗号分隔，默认 443,2053,8443)")
     args = parser.parse_args()
 
-    print("==================================================")
-    print("      OverNode 去伪存真·真物理落地装配引擎      ")
-    print(f" 入站节点文件: {args.inbound}")
-    print(f" 出站代理文件: {args.socks5}")
-    print(f" 目标输出订阅: {args.output}")
-    print("==================================================")
+    chain_ports = [int(p.strip()) for p in args.chain_ports.split(",") if p.strip()]
 
+    print("=" * 60)
+    print("  OverNode 多国 SOCKS5 落地 × CF 直连双轨装配引擎")
+    print(f"  入站节点文件: {args.inbound}")
+    print(f"  出站代理文件: {args.socks5}")
+    print(f"  链式端口矩阵: {chain_ports}")
+    print(f"  目标输出订阅: {args.output}")
+    print("=" * 60)
+
+    # 1. 解析 CF 入站优选节点
     by_region = parse_actions_inbound(args.inbound)
-    if not by_region["SG"] and not by_region["US"]:
-        print("[!] 错误：未读取到有效的 SG/US 入站节点！")
+    if not by_region:
+        print("[!] 错误：未读取到有效的入站节点！")
         return
 
-    anchor_socks5 = parse_socks5_anchor(args.socks5)
-    chain_lines = assemble_real_landing_chains(by_region, anchor_socks5)
+    # 2. 解析 SOCKS5 出站代理（按落地国分组）
+    socks5_by_country = parse_socks5_file(args.socks5)
+
+    # 3. 双轨装配
+    direct_lines, chain_lines = assemble_chains(by_region, socks5_by_country, chain_ports)
+
+    # 4. 合并输出：直连节点在前，链式节点在后
+    all_lines = direct_lines + chain_lines
+
+    if not all_lines:
+        print("[!] 装配结果为空，放弃写入！")
+        return
 
     # 快照软备份
     if os.path.exists(args.output):
         try:
             shutil.copyfile(args.output, args.backup)
-            print(f"[+] 已建立历史快照软备份: {args.backup}")
+            print(f"\n[+] 已建立历史快照软备份: {args.backup}")
         except Exception as e:
             print(f"[-] 备份失败: {e}")
 
     with open(args.output, "w", encoding="utf-8", newline="\n") as f:
-        f.write("\n".join(chain_lines) + "\n")
+        f.write("\n".join(all_lines) + "\n")
 
-    print(f"\n[+] 真实落地订阅生成完毕！文件保存至: {args.output}")
+    print(f"\n{'='*60}")
+    print(f"  [✓] 装配完毕！")
+    print(f"  >> CF 直连节点: {len(direct_lines)} 个")
+    print(f"  >> SOCKS5 链式节点: {len(chain_lines)} 个")
+    print(f"  >> 总计: {len(all_lines)} 个")
+    print(f"  >> 文件保存至: {args.output}")
+    print(f"{'='*60}")
 
 
 if __name__ == "__main__":

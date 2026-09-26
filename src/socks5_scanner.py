@@ -255,8 +255,33 @@ class Socks5Scanner:
         target_b = target_host.encode("utf-8")
         cmd = b"\x05\x01\x00\x03" + bytes([len(target_b)]) + target_b + target_port.to_bytes(2, "big")
         s.sendall(cmd)
-        rep = s.recv(10)
-        return len(rep) >= 2 and rep[1] == 0
+        
+        def _recv_all(sock, n):
+            data = bytearray()
+            while len(data) < n:
+                packet = sock.recv(n - len(data))
+                if not packet:
+                    return None
+                data.extend(packet)
+            return data
+            
+        rep = _recv_all(s, 4)
+        if not rep or rep[1] != 0:
+            return False
+            
+        atyp = rep[3]
+        if atyp == 1:
+            _recv_all(s, 6)
+        elif atyp == 3:
+            dlen = _recv_all(s, 1)
+            if dlen:
+                _recv_all(s, dlen[0] + 2)
+        elif atyp == 4:
+            _recv_all(s, 18)
+        else:
+            return False
+            
+        return True
 
     def _measure_socks5_throughput(
         self, host: str, port: int, username: str = "", password: str = "", test_seconds: float = 2.0
@@ -581,8 +606,8 @@ def main():
     parser.add_argument("--existing-file", "-e", default=None, help="现有在岗节点文件，用于优先复检保活")
     parser.add_argument("--count", "-c", type=int, default=6, help="最终保留的最优节点数")
     parser.add_argument("--concurrency", type=int, default=80, help="并发探测协程数")
-    parser.add_argument("--timeout", type=float, default=2.8, help="单节点超时时间(秒)")
-    parser.add_argument("--min-speed", type=float, default=0.5, help="吞吐带宽门槛(MB/s，默认 0.5 MB/s ≈ 4 Mbps)")
+    parser.add_argument("--timeout", type=float, default=5.0, help="单节点超时时间(秒)")
+    parser.add_argument("--min-speed", type=float, default=0.2, help="吞吐带宽门槛(MB/s，默认 0.2 MB/s ≈ 1.6 Mbps)")
     parser.add_argument("--worker-checker", "-w", default=None, help="edgetunnel云端探针端点(如 https://your-worker.xyz/admin/check)")
     parser.add_argument("--benchmark-max", "-b", action="store_true", help="开启最大吞吐量极限满载压测 (拉取50MB数据流测峰值带宽)")
     parser.add_argument("--test-node", "-t", default=None, help="单节点秒测模式 (例如: 107.167.18.122:443 或 45.32.160.61:1088)")
