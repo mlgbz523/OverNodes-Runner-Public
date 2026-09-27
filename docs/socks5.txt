@@ -1,2 +1,5 @@
-107.150.41.226:443#US-[socks5]
-107.150.41.226:1080#US-[socks5]
+peuyflfa:nekjz4d2caar@198.23.243.226:6361#US-WEBSHARE-[socks5]
+peuyflfa:nekjz4d2caar@38.154.185.97:6370#US-WEBSHARE-[socks5]
+peuyflfa:nekjz4d2caar@191.96.254.138:6185#US-WEBSHARE-[socks5]
+peuyflfa:nekjz4d2caar@198.46.161.42:5092#US-WEBSHARE-[socks5]
+107.150.41.226:18080#US-QUADRANET-[socks5]

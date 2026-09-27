@@ -306,6 +306,7 @@ def assemble_chains(
         for socks_rank, proxy in enumerate(proxies, 1):
             socks5_uri = f"socks5://{proxy['entry']}"
             letter = chr(96 + socks_rank) if 1 <= socks_rank <= 26 else str(socks_rank)
+            prefix = "WS" if "WEBSHARE" in proxy.get("isp", "").upper() else "S5"
             
             # 使用全部可用中继地区的主机与端口进行装配，实现多轨交叉匹配
             for reg in relay_regions:
@@ -316,7 +317,7 @@ def assemble_chains(
                     
                     # 优先使用 chain_ports 列表中指定的端口
                     for port in chain_ports:
-                        tag = f"{flag} S5_{letter}{reg.lower()[:2]}{cf_rank:02d}:{port}"
+                        tag = f"{flag} {prefix}_{letter}{reg.lower()[:2]}{cf_rank:02d}:{port}"
                         chain_entry = f"{ip}:{port}#{tag}${socks5_uri}"
                         chain_lines.append(chain_entry)
                         country_chain_count += 1
