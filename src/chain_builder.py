@@ -350,6 +350,10 @@ def verify_and_rank_chains(
 
     def test_single_chain(line: str) -> Optional[Tuple[str, float]]:
         try:
+            # 严格保护流量配额节点 (如 Webshare 1G 配额节点)，绝不发起任何网络探测或流量消耗
+            if "WS_" in line or "webshare" in line.lower():
+                return (line, 50.0)
+
             cf_part, s5_part = line.split("$", 1)
             cf_entry = cf_part.split("#")[0].strip()
             cf_ip, cf_p_str = cf_entry.split(":")

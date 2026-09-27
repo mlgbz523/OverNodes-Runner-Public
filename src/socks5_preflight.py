@@ -242,13 +242,33 @@ def main():
                     parsed["is_primary"] = True
                     candidates_to_test.append(parsed)
 
-    # 尝试加载历史已有文件
+    # 尝试加载历史已有文件 (静态配额节点如 Webshare 予以严格保护，只保留不参与测速)
+    protected_lines: List[str] = []
+    
+    # 优先从 docs/socks5.txt 提取受保护的静态节点
+    docs_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "docs", "socks5.txt")
+    if os.path.exists(docs_file):
+        try:
+            with open(docs_file, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    line_s = line.strip()
+                    if line_s and not line_s.startswith("#") and "webshare" in line_s.lower():
+                        if line_s not in protected_lines:
+                            protected_lines.append(line_s)
+        except Exception:
+            pass
+
     if args.existing_file and os.path.exists(args.existing_file):
         try:
             with open(args.existing_file, "r", encoding="utf-8", errors="ignore") as f:
                 for line in f:
                     line = line.strip()
                     if line and not line.startswith("#"):
+                        # 流量敏感节点 (如 Webshare) 绝对不参与测速与下载
+                        if "webshare" in line.lower():
+                            if line not in protected_lines:
+                                protected_lines.append(line)
+                            continue
                         parsed = parse_socks5_line(line)
                         key = f"{parsed['host']}:{parsed['port']}"
                         if key not in seen:
@@ -334,16 +354,24 @@ def main():
                 "tag": "US-[socks5]"
             }
 
-    # 5. 写入目标文件
+    # 5. 写入目标文件 (受保护的配额节点 + 验证通过的公共主力节点)
     output_line = format_socks5_line(qualified_node)
-    print(f"\n[*] 正在写入输出文件: {args.output} -> {output_line}")
+    final_lines = list(protected_lines)
+    if output_line not in final_lines:
+        final_lines.append(output_line)
+
+    print(f"\n[*] 正在写入输出文件: {args.output} (包含 {len(protected_lines)} 个免测受保护静态节点 + 1 个达标在岗节点)")
+    for pl in protected_lines:
+        print(f"    [免测直通] {pl}")
+    print(f"    [实测锁定] {output_line}")
+
     with open(args.output, "w", encoding="utf-8") as f:
-        f.write(output_line + "\n")
+        f.write("\n".join(final_lines) + "\n")
 
     if args.backup:
         print(f"[*] 同步备份至: {args.backup}")
         with open(args.backup, "w", encoding="utf-8") as f:
-            f.write(output_line + "\n")
+            f.write("\n".join(final_lines) + "\n")
 
     print("[✓] SOCKS5 先检保活完成！\n")
 
