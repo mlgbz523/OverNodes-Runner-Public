@@ -2,9 +2,8 @@ name: Cloudflare Private Speedtest Runner
 
 on:
   workflow_dispatch:
-  schedule:
-    # 每天执行 3 次: UTC 00:00, 08:00, 16:00 (对应北京时间 08:00, 16:00, 24:00)
-    - cron: '0 0,8,16 * * *'
+  # schedule:
+  #   - cron: '0 0,8,16 * * *' # 已迁移至公开仓库 OverNodes-Runner-Public 每小时执行，私有仓库停用定时调度以节省分钟数
 
 jobs:
   speedtest-and-dispatch:
