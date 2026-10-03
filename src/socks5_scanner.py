@@ -38,6 +38,17 @@ if sys.platform == "win32":
         pass
 
 # 优质候选代理源（涵盖公开聚合池、GitHub 自动更新源、API 实时源）
+# 恶意/蜜罐/劫持节点硬黑名单 (一票否决)
+MALICIOUS_PROXIES_BLACKLIST = {
+    "198.199.86.11",
+}
+
+# 伪造/蜜罐证书常见违规关键词 (黑名单)
+SUSPICIOUS_ISSUER_KEYWORDS = [
+    "example", "self-signed", "untrusted", "dummy", "honeypot",
+    "intercept", "mitm", "fiddler", "charles"
+]
+
 SOURCES = [
     {
         "name": "Proxifly",
@@ -448,6 +459,63 @@ class Socks5Scanner:
             except Exception:
                 pass
 
+    def _verify_ssl_security_integrity(
+        self, host: str, port: int, username: str = "", password: str = "", timeout: float = 3.5
+    ) -> bool:
+        """
+        严苛的 MITM 中间人攻击与伪造证书防投毒安全审计：
+        1. 针对全球知名严肃站点发起真实严格 TLS 握手 (check_hostname=True, verify_mode=CERT_REQUIRED)
+        2. 验证证书是否合法、真实、非自签名、非未知伪造机构颁发
+        3. 若握手失败、证书验证失败或包含假 CA 关键词，判定为恶意蜜罐节点
+        """
+        audit_targets = [
+            ("fiber.google.com", 443),
+            ("www.cloudflare.com", 443)
+        ]
+
+        for target_host, target_port in audit_targets:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(timeout)
+            try:
+                ok = self._socks5_handshake_and_connect(
+                    s, host, port, target_host=target_host, target_port=target_port,
+                    username=username, password=password
+                )
+                if not ok:
+                    return False
+
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = True
+                ctx.verify_mode = ssl.CERT_REQUIRED
+
+                with ctx.wrap_socket(s, server_hostname=target_host) as tls:
+                    cert = tls.getpeercert()
+                    if not cert:
+                        return False
+                    
+                    # 检查证书颁发者 (Issuer) 是否含有可疑伪造标记
+                    issuer_dict = dict(x[0] for x in cert.get("issuer", ()))
+                    issuer_org = str(issuer_dict.get("organizationName", "")).lower()
+                    issuer_cn = str(issuer_dict.get("commonName", "")).lower()
+
+                    for kw in SUSPICIOUS_ISSUER_KEYWORDS:
+                        if kw in issuer_org or kw in issuer_cn:
+                            print(f"[!] ⚠️ 拦截恶意 MITM 蜜罐代理 {host}:{port}！伪造颁发者: {issuer_org}/{issuer_cn}", flush=True)
+                            return False
+
+            except (ssl.SSLCertVerificationError, ssl.SSLError, ssl.CertificateError) as ssl_err:
+                print(f"[!] ⚠️ 拦截恶意 MITM 伪造证书代理 {host}:{port}！SSL 校验拦截: {ssl_err}", flush=True)
+                return False
+            except Exception:
+                return False
+            finally:
+                try:
+                    s.close()
+                except Exception:
+                    pass
+
+        return True
+
     def probe_node_full(self, node: Dict) -> Optional[Dict]:
         """完整执行：连通性初筛（本地或云端 Worker）+ 吞吐量极限压测"""
         host = node["host"]
@@ -455,6 +523,10 @@ class Socks5Scanner:
         username = node.get("username", "")
         password = node.get("password", "")
         entry = f"{username}:{password}@{host}:{port}" if username and password else f"{host}:{port}"
+
+        # 0. 硬黑名单拦截
+        if host in MALICIOUS_PROXIES_BLACKLIST or f"{host}:{port}" in MALICIOUS_PROXIES_BLACKLIST:
+            return None
 
         # 1. 优先尝试云端 Worker 探针（若配置）
         probe_res = None
@@ -473,6 +545,10 @@ class Socks5Scanner:
             return None
 
         latency, loc, exit_ip = probe_res
+
+        # 3. 严格执行 MITM 劫持与伪造证书防投毒安全审计 (一票否决)
+        if not self._verify_ssl_security_integrity(host, port, username, password):
+            return None
 
         # 3. 执行真实吞吐量与极限峰值测速
         test_sec = 4.0 if self.benchmark_max else 1.8

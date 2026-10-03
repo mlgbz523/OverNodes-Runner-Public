@@ -43,6 +43,8 @@ def socks5_handshake_and_connect(
     timeout: float = 4.0
 ) -> bool:
     """执行 RFC 1928 / RFC 1929 SOCKS5 握手并发出 CONNECT 指令"""
+    if host in ["198.199.86.11"] or f"{host}:{port}" in ["198.199.86.11:1080"]:
+        return False
     s.settimeout(timeout)
     s.connect((host, port))
     if username and password:
@@ -123,12 +125,21 @@ def probe_socks5_node(
         if not ok:
             return False, 9999.0, 0.0, "SOCKS5 握手或 CONNECT 失败"
 
-        # TLS 握手与测速
+        # TLS 握手与测速：严格校验系统根证书与域名，拦截自签名与中间人伪造
         ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+        ctx.check_hostname = True
+        ctx.verify_mode = ssl.CERT_REQUIRED
         tls_sock = ctx.wrap_socket(s, server_hostname=target_host)
         tls_sock.settimeout(timeout)
+
+        cert = tls_sock.getpeercert()
+        if not cert:
+            return False, 9999.0, 0.0, "未能获取对端合法 SSL 证书"
+
+        issuer_dict = dict(x[0] for x in cert.get("issuer", ()))
+        issuer_org = str(issuer_dict.get("organizationName", "")).lower()
+        if any(kw in issuer_org for kw in ["example", "self-signed", "untrusted", "dummy", "honeypot"]):
+            return False, 9999.0, 0.0, f"拦截恶意 MITM 伪造证书: {issuer_org}"
 
         latency_ms = (time.perf_counter() - t0) * 1000.0
 
