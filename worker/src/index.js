@@ -49,33 +49,7 @@ export default {
         return new Response(`[Error] File not found: ${pathname}`, { status: 404 });
       }
 
-      // ==================== 智能链式与动态节点注入 ====================
-      // 当 edgetunnel 请求节点源 (overNode_actions.txt / overNode_test_1.txt) 时：
-      if (pathname.includes("overNode") && pathname.endsWith(".txt")) {
-        // 固化唯一经过严格验证的 SOCKS5 安全主干出口，彻底关停公网扫描与备用节点
-        const socks5Exit = "107.150.41.226:18080";
 
-        // 提取前两个优质新加坡节点并挂接主力 SOCKS5
-        const lines = content.split("\n").map(l => l.trim()).filter(Boolean);
-        const sgNodes = lines.filter(l => l.toUpperCase().includes("SG"));
-        
-        let chainLines = [];
-        if (sgNodes.length >= 1) {
-          const hostPort1 = sgNodes[0].split("#")[0].trim();
-          chainLines.push(`${hostPort1}#SG-01-S5$socks5://${socks5Exit}`);
-        }
-        if (sgNodes.length >= 2) {
-          const hostPort2 = sgNodes[1].split("#")[0].trim();
-          chainLines.push(`${hostPort2}#SG-02-S5$socks5://${socks5Exit}`);
-        } else if (sgNodes.length === 1) {
-          const hostPort1 = sgNodes[0].split("#")[0].trim();
-          chainLines.push(`${hostPort1}#SG-02-S5$socks5://${socks5Exit}`);
-        }
-
-        if (chainLines.length > 0 && !content.includes("$socks5://")) {
-          content = content.trimEnd() + "\n" + chainLines.join("\n") + "\n";
-        }
-      }
 
       return new Response(content, {
         status: 200,
