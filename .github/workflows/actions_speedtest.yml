@@ -33,16 +33,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install aiohttp
 
-      - name: 1. SOCKS5 公网主动探知扫描与高带宽压测优选 (与在岗节点竞争择优)
+      - name: 1. 固定主干 SOCKS5 出口节点 (已关停公网扫描)
         run: |
-          python src/socks5_scanner.py \
-            --output socks5.txt \
-            --existing-file public_repo/socks5.txt \
-            --count 2 \
-            --concurrency 100 \
-            --timeout 4.0 \
-            --min-speed 0.3 \
-            --allowed-countries US || python src/socks5_preflight.py --current "107.150.41.226:18080" --output socks5.txt --existing-file public_repo/socks5.txt
+          echo "107.150.41.226:18080#US-QUADRANET-[socks5]" > socks5.txt
 
       - name: 2. 执行入站优选测速探针 (每端口独立精选 + 下载节点提纯)
         env:

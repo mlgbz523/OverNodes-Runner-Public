@@ -1409,11 +1409,13 @@ def git_commit_and_push(commit_msg: str, repo_root: Optional[str] = None, node_c
 
 def run_quick_test_and_push(
     force: bool = False,
-    target_domain: str = "98k2887114514.28870721.xyz",
+    target_domain: Optional[str] = None,
     output_file: str = "test_ips.txt",
     node_tag: Optional[str] = None,
     no_push: bool = False
 ):
+    if not target_domain:
+        target_domain = os.environ.get("PROBE_DOMAIN", "")
     """
     极速测试并推送：
     仅针对 1 个可用节点进行极速探针与 1.5 秒吞吐测速，
@@ -1691,8 +1693,8 @@ def parse_args():
                         help="去重历史备份文件名 (默认: 本地为 overNode_backup.txt，Actions环境下默认为 overNode_actions_backup.txt)")
     parser.add_argument("--node-tag", type=str, default=None,
                         help="节点备注附加标识 (如 Actions，生成形如 US-Actions[xxMB/S]-443)")
-    parser.add_argument("--domain", type=str, default="98k2887114514.28870721.xyz",
-                        help="指定 edgetunnel 业务域名，启用真实反代探针 (默认: 98k2887114514.28870721.xyz)")
+    parser.add_argument("--domain", type=str, default=os.environ.get("PROBE_DOMAIN", ""),
+                        help="指定 edgetunnel 业务域名，启用真实反代探针 (默认通过环境变量 PROBE_DOMAIN 获取)")
     parser.add_argument("--quick-test", action="store_true",
                         help="极速冒烟测试：仅测速 1 个可用节点并写入测试文件")
     parser.add_argument("--no-push", "--no-git-push", action="store_true",
