@@ -1098,7 +1098,7 @@ def save_download_nodes(
             ip = item['ip']
             c = item.get('country', 'US')
             speed = item.get('speed', 0.0)
-            line = f"{ip}:{port}#{c}-下载-[{rank:02d}]:{port}"
+            line = f"{ip}:{port}#{c}-DL-[{rank:02d}]:{port}"
             download_lines.append(line)
 
     content = "\n".join(download_lines) + "\n"
