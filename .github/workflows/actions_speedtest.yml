@@ -33,7 +33,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install aiohttp
 
-      - name: 1. 执行入站优选测速探针 (每端口独立精选 + 下载节点提纯)
+      - name: 1. 执行入站优选测速探针 (每端口独立精选 + 满血大文件测速)
         env:
           PROBE_DOMAIN: ${{ secrets.PROBE_DOMAIN }}
         run: |
@@ -50,7 +50,7 @@ jobs:
             --regions SG,US \
             --domain "$PROBE_DOMAIN" \
             --target-count 6 \
-            --min-speed 0.5 \
+            --min-speed 1.5 \
             --force \
             --no-push
 
