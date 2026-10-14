@@ -441,14 +441,14 @@ async def get_iata_code_from_ip_async(session: aiohttp.ClientSession, ip: str, t
         return None
     return None
 
-def download_speed_test(ip: str, port: int, test_host="speed.cloudflare.com", time_limit=2.5) -> float:
-    """真实下载吞吐测速 (自带 429 与异常自动降级备选 CDN 源)"""
+def download_speed_test(ip: str, port: int, test_host="speed.cloudflare.com", time_limit=3.0) -> float:
+    """真实满血下载吞吐测试 (Referer 鉴权突破 + 25MB 官方大包 + 剔除握手延时)"""
     def _test_target(target_host: str, path: str) -> float:
         headers = (
             f"GET {path} HTTP/1.1\r\n"
             f"Host: {target_host}\r\n"
             f"User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n"
-            f"Accept: */*\r\n"
+            f"Referer: https://{target_host}/\r\n"
             f"Connection: close\r\n\r\n"
         ).encode()
 
@@ -457,24 +457,33 @@ def download_speed_test(ip: str, port: int, test_host="speed.cloudflare.com", ti
             sock = socket.create_connection((ip, port), timeout=2.5)
             ss = GLOBAL_SSL_CTX.wrap_socket(sock, server_hostname=target_host)
             ss.sendall(headers)
-            start = time.time()
+            transfer_start = None
             header_done = False
             body = 0
-            while time.time() - start < time_limit:
-                buf = ss.recv(16384)
+            start_connect = time.time()
+            
+            while time.time() - start_connect < time_limit:
+                buf = ss.recv(65536)
                 if not buf:
                     break
                 if not header_done:
                     if b"\r\n\r\n" in buf:
                         header_done = True
+                        transfer_start = time.time() # 从收到首个字节起精准计时传输速率
                         head_part, body_part = buf.split(b"\r\n\r\n", 1)
-                        if b"200 OK" not in head_part:
-                            return -1.0 # 非 200 状态码触发自动降级
+                        if b"200 OK" not in head_part and b"206 Partial" not in head_part:
+                            return -1.0
                         body += len(body_part)
                 else:
                     body += len(buf)
-            dur = time.time() - start
-            return round((body / 1024 / 1024) / max(dur, 0.1), 2)
+
+            if body == 0 or transfer_start is None:
+                return -1.0
+
+            dur = time.time() - transfer_start
+            effective_dur = max(dur, 0.05)
+            speed_mb = (body / (1024 * 1024)) / effective_dur
+            return round(speed_mb, 2)
         except Exception:
             return -1.0
         finally:
@@ -484,14 +493,24 @@ def download_speed_test(ip: str, port: int, test_host="speed.cloudflare.com", ti
                 except Exception:
                     pass
 
-    # 1. 优先采用官方 speed.cloudflare.com 测速
+    # 1. 优先采用官方 speed.cloudflare.com 25MB 满血测速包 (带真实 Referer 鉴权)
     speed = _test_target("speed.cloudflare.com", "/__down?bytes=25000000")
     if speed > 0:
         return speed
 
-    # 2. 若遇 429 限流或非200，自动无缝降级到 Cloudflare 静态 CDN 资源进行下载吞吐测试
-    fallback_speed = _test_target("cdnjs.cloudflare.com", "/ajax/libs/font-awesome/6.4.0/webfonts/fa-solid-900.woff2")
-    return max(fallback_speed, 0.0)
+    # 2. 依次降级到 Cloudflare CDN 百 KB 至数 MB 级开源大文件资源池
+    cdn_targets = [
+        ("cdnjs.cloudflare.com", "/ajax/libs/monaco-editor/0.44.0/min/vs/base/worker/workerMain.js"),
+        ("cdnjs.cloudflare.com", "/ajax/libs/pdf.js/4.0.379/pdf.worker.min.mjs"),
+        ("cdnjs.cloudflare.com", "/ajax/libs/font-awesome/6.4.0/webfonts/fa-solid-900.woff2")
+    ]
+
+    for host, path in cdn_targets:
+        speed = _test_target(host, path)
+        if speed > 0:
+            return speed
+
+    return 0.0
 
 class FastCloudflareScanner:
     """两阶段高性能扫描引擎：TCP 快速初筛 + aiohttp 连接池精准解析机房"""
