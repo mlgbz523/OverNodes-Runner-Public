@@ -136,7 +136,7 @@ def sync_dns_records(
     current_set = set(existing_ips.keys())
 
     if target_set == current_set:
-        log(f"✅ 线上解析与目标优选 IP 完全一致，跳过更新，保持现有 DNS 缓存。")
+        log(f"[OK] 线上解析与目标优选 IP 完全一致，跳过更新，保持现有 DNS 缓存。")
         return True
 
     # 3. 找出需要删除的多余记录
@@ -167,7 +167,7 @@ def sync_dns_records(
         else:
             log(f"新增 A 记录 {ip} 失败: {a_err}", "ERROR")
 
-    log(f"🎉 域名 [{dns_name}] 优选 DNS 同步完成！最新绑定 IP: {target_ips}")
+    log(f"[SUCCESS] 域名 [{dns_name}] 优选 DNS 同步完成！最新绑定 IP: {target_ips}")
     return True
 
 def main():
@@ -181,14 +181,30 @@ def main():
     parser.add_argument("--proxied", action="store_true", help="是否开启 CF CDN 代理 (优选 IP 必须保持关闭，默认: False)")
     args = parser.parse_args()
 
-    token = args.token.strip()
+    # 优先检测本地配置文件 configs/dns_config.json
+    file_cfg = {}
+    cfg_paths = [
+        os.path.join(os.getcwd(), "configs", "dns_config.json"),
+        os.path.join(os.path.dirname(__file__), "..", "configs", "dns_config.json"),
+        os.path.join(os.path.dirname(__file__), "dns_config.json")
+    ]
+    for cp in cfg_paths:
+        if os.path.exists(cp):
+            try:
+                with open(cp, "r", encoding="utf-8") as f:
+                    file_cfg = json.load(f)
+                break
+            except Exception:
+                pass
+
+    token = args.token.strip() or file_cfg.get("token", "").strip()
     if not token:
-        log("未检测到环境变量 CF_API_TOKEN，跳过 Cloudflare DNS 域名解析同步 (非阻断警告)。", "WARN")
+        log("未检测到环境变量 CF_API_TOKEN 或本地配置文件，跳过 Cloudflare DNS 同步 (非阻断警告)。", "WARN")
         sys.exit(0)
 
-    dns_name = args.name.strip()
+    dns_name = args.name.strip() or file_cfg.get("name", "").strip()
     if not dns_name:
-        log("未指定目标域名 (参数 --name 或环境变量 CF_DNS_NAME)，跳过 DNS 同步。", "WARN")
+        log("未指定目标域名 (参数 --name / 环境变量 CF_DNS_NAME / 配置文件)，跳过 DNS 同步。", "WARN")
         sys.exit(0)
 
     # 智能定位输入文件
