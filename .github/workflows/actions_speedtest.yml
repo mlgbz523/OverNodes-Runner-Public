@@ -2,8 +2,8 @@ name: Cloudflare Private Speedtest Runner
 
 on:
   workflow_dispatch:
-  # schedule:
-  #   - cron: '0 0,8,16 * * *' # 已迁移至公开仓库 OverNodes-Runner-Public 每小时执行，私有仓库停用定时调度以节省分钟数
+  schedule:
+    - cron: '0 */4 * * *' # 每天每 4 小时全自动执行一次
 
 jobs:
   speedtest-and-dispatch:
@@ -92,3 +92,12 @@ jobs:
             echo "[-] 测速未生成结果文件！"
             exit 1
           fi
+
+      - name: 3. 自动同步 Top 优选 IP 到 Cloudflare 域名解析 (DDNS)
+        if: always()
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
+          CF_DNS_NAME: ${{ secrets.CF_DNS_NAME }}
+        run: |
+          python tools/update_cf_dns.py --input overNode_actions.txt
